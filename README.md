@@ -71,34 +71,32 @@
 4.  在 **Name (名称)** 输入框中填写: `pureproxy-backend`。
 5.  点击底部的 **Deploy (部署)** 按钮 (这将部署一个默认的 Hello World 代码，不用担心，我们马上会覆盖它)。
 
-#### 2. 绑定数据库 (关键步骤)
-*Cloudflare 界面已更新，资源绑定现在位于独立的 Bindings 选项卡中。*
-
-1.  部署完成后，点击 **Edit code (编辑代码)** 旁边的 **Settings (设置)** 按钮（或者在 Worker 列表点击 `pureproxy-backend` 进入详情页，然后点击顶部的 **Settings (设置)** 标签）。
-2.  在 Settings 页面下的二级菜单中，点击 **Bindings (绑定)** (注意：不要去 Variables)。
-3.  点击 **Add (添加)** 按钮，在下拉菜单中选择 **D1 Database (D1 数据库)**。
-4.  配置绑定信息：
-    *   **Variable name (变量名称)**: 输入 `DB` (必须完全一致，因为代码中使用 `env.DB` 调用)。
-    *   **D1 database (D1 数据库)**: 在下拉框中选择第一步创建的 `pureproxy-db`。
-5.  点击右侧的 **Deploy (部署)** 按钮保存设置。
-
-#### 3. 上传后端代码
-1.  点击页面顶部的 **Edit code (编辑代码)** 按钮，进入在线代码编辑器。
-2.  在左侧文件列表区域，确保只有一个 `worker.ts` (或者是 `index.js` / `index.ts`)。
+#### 2. 上传后端代码
+1.  部署完成后，点击页面顶部的 **Edit code (编辑代码)** 按钮，进入在线代码编辑器。
+2.  在左侧文件列表区域，确保只有一个 `worker.js` (或者是 `index.js`)。
 3.  打开你本地项目中的 `worker/index.ts` 文件，**全选并复制**所有内容。
+    *   *注意：代码已经优化为纯 JavaScript，可以直接粘贴使用，不会报错。*
 4.  回到在线编辑器，**清空** 编辑器中原有的代码，将你复制的内容 **粘贴** 进去。
-5.  *(如果看到红色波浪线报错提示类型错误，通常可以忽略，直接部署即可)*。
-6.  点击编辑器右上角的 **Deploy (部署)** 按钮。
+5.  点击编辑器右上角的 **Deploy (部署)** 按钮。
+
+#### 3. 绑定数据库 (关键步骤)
+1.  点击编辑器左上角的 `pureproxy-backend` 返回 Worker 详情页（或者点击顶部 **Settings**）。
+2.  点击 **Settings (设置)** 标签页。
+3.  在二级菜单点击 **Bindings (绑定)**。
+4.  点击 **Add (添加)** 按钮，在下拉菜单中选择 **D1 Database (D1 数据库)**。
+5.  配置绑定信息：
+    *   **Variable name (变量名称)**: 输入 `DB` (⚠️ 必须完全一致，因为代码中使用 `env.DB` 调用)。
+    *   **D1 database (D1 数据库)**: 在下拉框中选择第一步创建的 `pureproxy-db`。
+6.  点击右侧的 **Deploy (部署)** 按钮保存设置。
 
 #### 4. 设置定时任务 (Cron Triggers)
 为了让爬虫自动运行，我们需要设置触发器。
 
-1.  点击编辑器左上角的 `pureproxy-backend` 返回 Worker 详情页（或者点击顶部 **Settings**）。
-2.  点击 **Settings (设置)** 标签页。
-3.  在二级菜单点击 **Triggers (触发器)**。
-4.  找到 **Cron Triggers (Cron 触发器)** 部分，点击 **Add Cron Trigger (添加 Cron 触发器)**。
-5.  在 **Cron schedule (Cron 计划)** 中输入: `*/30 * * * *` (意思是每 30 分钟执行一次)。
-6.  点击 **Add Trigger (添加触发器)**。
+1.  仍在 **Settings (设置)** 页面。
+2.  在二级菜单点击 **Triggers (触发器)**。
+3.  找到 **Cron Triggers (Cron 触发器)** 部分，点击 **Add Cron Trigger (添加 Cron 触发器)**。
+4.  在 **Cron schedule (Cron 计划)** 中输入: `*/30 * * * *` (意思是每 30 分钟执行一次)。
+5.  点击 **Add Trigger (添加触发器)**。
 
 #### 5. 获取后端 API 地址
 1.  在 Worker 详情页的顶部，你会看到 **Preview URL (预览 URL)** (格式通常是 `https://pureproxy-backend.你的用户名.workers.dev`)。
