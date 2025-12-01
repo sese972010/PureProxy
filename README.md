@@ -20,18 +20,19 @@ Cloudflare Workers 存在限制，无法直接连接到 Cloudflare 自有的 IP 
 
 ---
 
-## 🚀 数据源 (Updated)
+## 🚀 数据源
 
-本项目已更新为使用更稳定、聚合类的 ProxyIP 数据源，以解决单个文件 404 的问题：
+本项目采用 **FOFA 定向扫描 + 开源聚合兜底** 的混合策略：
 
-*   **ymyuuu/IPDB (Best Proxy)**: GitHub 上最热门的代理聚合源之一，包含大量 Base64 订阅链接，Worker 已支持自动解码。
-*   **391040525/ProxyIP (Active)**: 专用的 ProxyIP 活跃列表。
-
-Worker 会定期（每 30 分钟）抓取这些源，自动识别 Base64 或文本格式，提取 IP 并执行深度协议验证（发送伪造的 CF 请求）。
+1.  **FOFA (推荐)**: 
+    *   通过配置 API Key，直接从 FOFA 网络空间测绘引擎抓取。
+    *   **策略**: 锁定 `Country="US"` (美国) + `Server="Cloudflare"`，优先获取家宽 IP。
+2.  **开源聚合 (兜底)**:
+    *   当 FOFA 配额耗尽或未配置时，自动切换至 **ymyuuu/IPDB** 等高质量开源列表。
 
 ---
 
-## 🛠️ 部署指南 (纯图形化界面版)
+## 🛠️ 部署指南
 
 ### 第一步：创建 D1 数据库
 
@@ -68,33 +69,36 @@ Worker 会定期（每 30 分钟）抓取这些源，自动识别 Base64 或文�
 ### 第二步：部署后端 Worker
 
 1.  创建名为 `pureproxy-backend` 的 Worker。
-2.  点击 **Edit code**，将 `worker/index.ts` 的内容复制粘贴进去 (无需修改)。
-3.  **重要**: 在 **Settings** -> **Bindings** 中，添加 D1 Database 绑定，变量名为 `DB`，选择 `pureproxy-db`。
-4.  在 **Settings** -> **Triggers** 中，添加 Cron Trigger: `*/30 * * * *`。
-5.  点击 **Deploy**。
+2.  点击 **Edit code**，将 `worker/index.ts` 的内容复制粘贴进去。
+3.  **配置 D1 绑定**: 
+    *   Settings -> Bindings -> Add -> D1 Database
+    *   Variable name: `DB`
+    *   Database: `pureproxy-db`
+4.  **配置定时任务**:
+    *   Settings -> Triggers -> Cron Triggers -> Add Cron Trigger
+    *   Cron expression: `*/30 * * * *` (每30分钟运行一次)
+5.  **(可选) 配置 FOFA API**:
+    *   Settings -> Bindings -> Environment Variables
+    *   添加 `FOFA_EMAIL`: 你的注册邮箱
+    *   添加 `FOFA_KEY`: 你的 API Key (在 fofa.info 个人中心查看)
+    *   *注: 免费版 FOFA Key 每日/每月有查询限额，Worker 已设置为每次只查 40 条以节省配额。*
+6.  点击 **Deploy**。
 
 ### 第三步：部署前端 Pages
 
 1.  将代码推送到 GitHub。
 2.  在 Cloudflare 创建 Pages 项目，连接 GitHub。
 3.  **Build Settings**: Framework preset 选 **Vite**，Output directory 填 **dist**。
-4.  **Environment variables**: 添加 `REACT_APP_API_URL`，值为你的 Worker URL。
+4.  **Environment variables**: 添加 `REACT_APP_API_URL`，值为你的 Worker URL (例如 `https://pureproxy-backend.xxx.workers.dev`)。
 
 ---
 
-### 🎉 验证与排错
+### 🎉 验证与使用
 
-1.  部署完成后，去 Worker 的 **Triggers** 页面点击 **Cron Triggers** 旁边的 **Test** 按钮。
-2.  查看 **Logs** (Real-time logs)。
-    *   **正常日志**: 
-        ```
-        正在获取源: ymyuuu/IPDB...
-        源响应状态: 200
-        获取内容长度: 15403 字符
-        检测到 Base64 编码，尝试解码...
-        解析出 500 个候选 IP
-        正在验证: 1.2.3.4:443...
-        ✅ 有效 ProxyIP!
-        ```
-    *   **异常排查**: 如果看到 `源响应状态: 404` 或 `内容长度: 0`，说明该源暂时不可用，Worker 会自动尝试下一个源。
-3.  访问前端网页，等待片刻，直到数据显示。
+1.  **手动触发抓取**: 去 Worker 的 **Triggers** 页面点击 **Test**。
+2.  **查看日志**:
+    *   如果配置了 FOFA: `[FOFA] 成功获取 xx 个美国节点`。
+    *   如果没配置: `[Source] FOFA 数据不足，切换到公共聚合源...`。
+3.  **前端查看**:
+    *   刷新网页，列表默认会优先显示 **美国 (US)** 的 **家宽 (Residential)** IP（如果有抓取到）。
+    *   家宽 IP 会有独特的绿色标签和较高的纯净度评分。
