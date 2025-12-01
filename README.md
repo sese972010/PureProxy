@@ -20,15 +20,17 @@ Cloudflare Workers 存在限制，无法直接连接到 Cloudflare 自有的 IP 
 
 ---
 
-## 🚀 数据源
+## 🚀 数据源与策略
 
 本项目采用 **FOFA 定向扫描 + 开源聚合兜底** 的混合策略：
 
-1.  **FOFA (推荐)**: 
+1.  **FOFA (VIP/免费版)**: 
     *   通过配置 API Key，直接从 FOFA 网络空间测绘引擎抓取。
-    *   **策略**: 锁定 `Country="US"` (美国) + `Server="Cloudflare"`，优先获取家宽 IP。
+    *   **搜索语法**: `server=="cloudflare" && port="443" && country="US"`
+    *   **策略**: 优先抓取美国 IP。
 2.  **开源聚合 (兜底)**:
     *   当 FOFA 配额耗尽或未配置时，自动切换至 **ymyuuu/IPDB** 等高质量开源列表。
+    *   智能解析 Base64 订阅内容，提取 IP。
 
 ---
 
@@ -77,11 +79,11 @@ Cloudflare Workers 存在限制，无法直接连接到 Cloudflare 自有的 IP 
 4.  **配置定时任务**:
     *   Settings -> Triggers -> Cron Triggers -> Add Cron Trigger
     *   Cron expression: `*/30 * * * *` (每30分钟运行一次)
-5.  **(可选) 配置 FOFA API**:
+5.  **(强烈推荐) 配置 FOFA API**:
     *   Settings -> Bindings -> Environment Variables
     *   添加 `FOFA_EMAIL`: 你的注册邮箱
     *   添加 `FOFA_KEY`: 你的 API Key (在 fofa.info 个人中心查看)
-    *   *注: 免费版 FOFA Key 每日/每月有查询限额，Worker 已设置为每次只查 40 条以节省配额。*
+    *   *注: 免费版 FOFA 每日有查询限额，请勿将 Cron 频率设置过高。*
 6.  点击 **Deploy**。
 
 ### 第三步：部署前端 Pages
@@ -93,12 +95,16 @@ Cloudflare Workers 存在限制，无法直接连接到 Cloudflare 自有的 IP 
 
 ---
 
-### 🎉 验证与使用
+## ❓ 常见问题排查
 
-1.  **手动触发抓取**: 去 Worker 的 **Triggers** 页面点击 **Test**。
-2.  **查看日志**:
-    *   如果配置了 FOFA: `[FOFA] 成功获取 xx 个美国节点`。
-    *   如果没配置: `[Source] FOFA 数据不足，切换到公共聚合源...`。
-3.  **前端查看**:
-    *   刷新网页，列表默认会优先显示 **美国 (US)** 的 **家宽 (Residential)** IP（如果有抓取到）。
-    *   家宽 IP 会有独特的绿色标签和较高的纯净度评分。
+### 1. FOFA 日志报错
+在 Worker -> Logs 中查看：
+*   `[FOFA] API 错误: 820000: F-Coin is not enough` -> 积分不足。解决方法：等待第二天刷新或充值。Worker 会自动切换到公共源。
+*   `[FOFA] API 错误: 40001: Account invalid` -> 邮箱未验证或 Key 错误。
+
+### 2. 公共源只解析出 1 个 IP
+*   这通常是因为源返回了 Base64 编码。最新版代码已修复此问题，支持自动 Base64 解码。
+
+### 3. 为什么扫描到的 IP 很少？
+*   ProxyIP 的验证非常严格（必须能反代 Cloudflare）。市面上 99% 的普通代理都无法通过此验证。
+*   每次扫描任务限制了运行时间（防止超时），每次只新增 5-8 个有效 IP 是正常的。建议让定时任务多跑几天，数据库就会丰富起来。
