@@ -31,8 +31,31 @@
 7.  **初始化表结构 (重要)**:
     *   创建成功后，点击进入 `pureproxy-db` 详情页。
     *   点击 **Console** (控制台) 标签页。
-    *   打开本地项目中的 `schema.sql` 文件，全选并复制内容。
-    *   将其粘贴到网页的 SQL 输入框中。
+    *   **复制以下 SQL 代码**，粘贴到网页的 SQL 输入框中：
+
+    ```sql
+    DROP TABLE IF EXISTS proxies;
+    CREATE TABLE proxies (
+      id TEXT PRIMARY KEY,
+      ip TEXT NOT NULL,
+      port INTEGER NOT NULL,
+      protocol TEXT,
+      country TEXT,
+      country_code TEXT,
+      isp TEXT,
+      anonymity TEXT,
+      latency INTEGER,
+      purity_score INTEGER,
+      cf_pass_prob INTEGER,
+      last_checked INTEGER,
+      created_at INTEGER,
+      UNIQUE(ip, port)
+    );
+    CREATE INDEX idx_proxies_purity ON proxies(purity_score DESC);
+    CREATE INDEX idx_proxies_country ON proxies(country_code);
+    CREATE INDEX idx_proxies_protocol ON proxies(protocol);
+    ```
+
     *   点击 **Execute** (执行)。
     *   *看到 "Success" 提示即表示数据库表已建立。*
 
