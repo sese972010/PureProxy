@@ -1,21 +1,32 @@
 
 import { connect } from 'cloudflare:sockets';
 
-// 数据源配置 (使用 jsDelivr CDN 加速，确保稳定性)
+// 配置常量
+const BATCH_SIZE = 20; // 并发验证数量 (Cloudflare 限制子请求并发数，建议 20-50)
+const SCAN_LIMIT = 200; // 单次 Cron 运行扫描的最大 IP 数 (免费版 30秒限制，200 是安全值)
+
+// Cloudflare 官方 IP 段 (CIDR)
+// 用于过滤掉 Cloudflare 自己的 IP，防止 Worker 连接回环错误
+const CF_IPV4_CIDRS = [
+  '173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22',
+  '141.101.64.0/18', '108.162.192.0/18', '190.93.240.0/20', '188.114.96.0/20',
+  '197.234.240.0/22', '198.41.128.0/17', '162.158.0.0/15', '104.16.0.0/13',
+  '104.24.0.0/14', '172.64.0.0/13', '131.0.72.0/22'
+];
+
+// 数据源配置 (精简为高质量源)
 const PROXY_SOURCES = [
   {
-    name: 'Monosans/All (海量源)',
-    // 包含 HTTP/SOCKS4/SOCKS5 所有类型的代理，量极大
-    url: 'https://cdn.jsdelivr.net/gh/monosans/proxy-list@main/proxies/all.txt' 
-  },
-  {
-    name: 'vfarid/CF-Scanner (纯IP)',
-    // 专门针对 Cloudflare 的扫描列表
+    name: 'vfarid/CF-Scanner (推荐)',
     url: 'https://cdn.jsdelivr.net/gh/vfarid/cf-ip-scanner@master/ipv4.txt'
   },
   {
-    name: 'TheSpeedX/SOCKS (备用)',
-    url: 'https://cdn.jsdelivr.net/gh/TheSpeedX/SOCKS-List@master/http.txt'
+    name: 'Monosans/All (海量)',
+    url: 'https://cdn.jsdelivr.net/gh/monosans/proxy-list@main/proxies/all.txt'
+  },
+  {
+    name: '391040525/Active (备用)',
+    url: 'https://cdn.jsdelivr.net/gh/391040525/ProxyIP@main/active.txt'
   }
 ];
 
@@ -30,39 +41,43 @@ const withTimeout = (promise, ms) => {
   ]);
 };
 
+// 辅助函数: IP 转数值
+function ipToLong(ip) {
+  return ip.split('.').reduce((acc, octet) => (acc << 8) + parseInt(octet, 10), 0) >>> 0;
+}
+
+// 辅助函数: 检查 IP 是否在 CIDR 范围内
+function isIpInCidr(ip, cidr) {
+  const [range, bits] = cidr.split('/');
+  const mask = ~((1 << (32 - parseInt(bits, 10))) - 1);
+  return (ipToLong(ip) & mask) === (ipToLong(range) & mask);
+}
+
+// 核心: 检查是否为 Cloudflare IP
+function isCloudflareIP(ip) {
+  if (!ip) return false;
+  return CF_IPV4_CIDRS.some(cidr => isIpInCidr(ip, cidr));
+}
+
 /**
  * 终极暴力提取 IP
- * 移除所有边界检查，只要像 IP 就抓出来
  */
 function extractIPs(text) {
   if (!text) return [];
   const candidates = new Set();
-  
-  // 最宽松的 IPv4 正则：数字.数字.数字.数字 (可选端口)
-  // 不使用 \b 边界，防止被特殊符号干扰
   const regex = /(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?/g;
   
-  // 1. 尝试 Base64 解码 (针对某些订阅源)
   try {
-    // 移除空白字符
     const cleanText = text.replace(/\s/g, '');
-    // 简单的 Base64 特征判断 (长度是4倍数，且只包含 base64 字符)
     if (cleanText.length > 20 && /^[a-zA-Z0-9+/]+={0,2}$/.test(cleanText)) {
       const decoded = atob(cleanText);
-      const decodedMatches = decoded.match(regex);
-      if (decodedMatches) {
-        decodedMatches.forEach(ip => candidates.add(ip));
-      }
+      const matches = decoded.match(regex);
+      if (matches) matches.forEach(ip => candidates.add(ip));
     }
-  } catch (e) {
-    // 解码失败忽略
-  }
+  } catch (e) {}
 
-  // 2. 原文匹配 (这是主力)
   const matches = text.match(regex);
-  if (matches) {
-    matches.forEach(ip => candidates.add(ip));
-  }
+  if (matches) matches.forEach(ip => candidates.add(ip));
   
   return Array.from(candidates);
 }
@@ -72,50 +87,35 @@ function extractIPs(text) {
  */
 function isValidPublicIp(ip) {
   if (!ip) return false;
-  // 简单的格式校验
   const parts = ip.split('.').map(Number);
   if (parts.length !== 4) return false;
   if (parts.some(p => isNaN(p) || p < 0 || p > 255)) return false;
 
   const [a, b] = parts;
-
   // 排除内网和保留地址
   if (a === 10) return false;
   if (a === 172 && b >= 16 && b <= 31) return false;
   if (a === 192 && b === 168) return false;
   if (a === 127) return false;
   if (a === 0) return false;
-  if (a >= 224) return false; // Multicast+
-  if (a === 215) return false; // DoD (常见误报)
   
+  // 关键: 排除 Cloudflare 自己的 IP
+  if (isCloudflareIP(ip)) return false;
+
   return true;
 }
 
 /**
- * 判断是否为家宽 ISP (Residential)
+ * 判断是否为家宽 ISP
  */
 function isResidentialISP(ispName) {
   if (!ispName) return false;
   const lower = ispName.toLowerCase();
-  
-  const residentialKeywords = [
-    'cable', 'dsl', 'fios', 'broadband', 'telecom', 'mobile', 'wireless', 
-    'verizon', 'comcast', 'at&t', 'vodafone', 'orange', 't-mobile', 'sprint',
-    'charter', 'spectrum', 'rogers', 'bell', 'shaw', 'telus', 'kddi', 'ntt',
-    'softbank', 'kt corp', 'sk broadband', 'chunghwa', 'hinet', 'vietel', 
-    'residental', 'dynamic', 'residential', 'home', 'consumer', 'ipoe'
-  ];
+  const resKw = ['cable', 'dsl', 'fios', 'broadband', 'telecom', 'mobile', 'verizon', 'comcast', 'at&t', 'vodafone', 'residential', 'home', 'spectrum', 'cox'];
+  const dcKw = ['cloud', 'data', 'center', 'hosting', 'server', 'vps', 'amazon', 'google', 'microsoft', 'alibaba', 'digitalocean', 'cloudflare', 'oracle', 'linode'];
 
-  const datacenterKeywords = [
-    'cloud', 'data', 'center', 'hosting', 'server', 'vps', 'dedicated',
-    'amazon', 'aws', 'google', 'microsoft', 'azure', 'alibaba', 'tencent',
-    'digitalocean', 'linode', 'vultr', 'ovh', 'hetzner', 'choopa', 'm247',
-    'oracle', 'fly.io', 'cloudflare', 'akamai', 'cdn77', 'host', 'colocation'
-  ];
-
-  if (datacenterKeywords.some(k => lower.includes(k))) return false;
-  if (residentialKeywords.some(k => lower.includes(k))) return true;
-
+  if (dcKw.some(k => lower.includes(k))) return false;
+  if (resKw.some(k => lower.includes(k))) return true;
   return false;
 }
 
@@ -124,16 +124,15 @@ function isResidentialISP(ispName) {
  */
 async function fetchIpGeo(ip) {
   try {
-    const response = await fetch(`http://ip-api.com/json/${ip}?fields=status,message,country,countryCode,regionName,city,isp,org,as&lang=zh-CN`, {
-        headers: { 'User-Agent': 'Mozilla/5.0' }
+    const response = await fetch(`http://ip-api.com/json/${ip}?fields=status,country,countryCode,regionName,city,isp&lang=zh-CN`, {
+        headers: { 'User-Agent': 'PureProxy/1.0' }
     });
-    if (!response.ok) return null;
-    const data = await response.json();
-    if (data.status !== 'success') return null;
-    return data;
-  } catch (e) {
-    return null;
-  }
+    if (response.ok) {
+      const data = await response.json();
+      if (data.status === 'success') return data;
+    }
+  } catch (e) {}
+  return null;
 }
 
 /**
@@ -146,14 +145,14 @@ async function validateProxyIP(ip, port = 443) {
   let reader = null;
 
   try {
+    // 1. 建立 TCP 连接 (1.5秒超时)
     await withTimeout(async function() {
       socket = connect({ hostname: ip, port: port });
       writer = socket.writable.getWriter();
       return writer.ready;
-    }(), 2000); // 连接超时 2s
+    }(), 1500);
 
-    // 发送 HTTP 请求探测
-    // 必须包含 Host: speed.cloudflare.com 才能触发反代逻辑
+    // 2. 发送 HTTP 请求探测
     const request = new TextEncoder().encode(
       `GET / HTTP/1.1\r\nHost: speed.cloudflare.com\r\nConnection: close\r\nUser-Agent: PureProxy/ScanBot\r\n\r\n`
     );
@@ -163,21 +162,16 @@ async function validateProxyIP(ip, port = 443) {
     let responseText = '';
     const decoder = new TextDecoder();
     
-    // 读取响应，最多读 3s
+    // 3. 读取响应 (2秒超时)
     await withTimeout(async function() {
-      const { value, done } = await reader.read();
-      if (value) {
-        responseText = decoder.decode(value, { stream: false });
-      }
-    }(), 3000); 
+      const { value } = await reader.read();
+      if (value) responseText = decoder.decode(value);
+    }(), 2000); 
 
-    // 关键判据: Server: cloudflare
-    const isCloudflare = responseText.toLowerCase().includes('server: cloudflare');
-    
-    if (isCloudflare) {
+    // 4. 关键判据
+    if (responseText.toLowerCase().includes('server: cloudflare')) {
       return Date.now() - start;
     }
-    
     return null;
 
   } catch (error) {
@@ -189,149 +183,162 @@ async function validateProxyIP(ip, port = 443) {
   }
 }
 
+/**
+ * 处理单个 IP 的完整流程 (验证 + Geo + 格式化)
+ */
+async function processIP(line) {
+  const parts = line.split(':');
+  let ip = parts[0];
+  let port = parts.length > 1 ? parseInt(parts[1], 10) : 443;
+  if (isNaN(port)) port = 443;
+
+  const latency = await validateProxyIP(ip, port);
+  if (latency !== null) {
+    // 验证成功后，随机延迟 100-500ms 防止 Geo API 速率限制
+    await delay(Math.floor(Math.random() * 400) + 100);
+    const geo = await fetchIpGeo(ip);
+    
+    const country = geo ? geo.country : '未知';
+    const countryCode = geo ? geo.countryCode : 'UN';
+    const city = geo ? geo.city : '';
+    const region = geo ? geo.regionName : '';
+    const isp = geo ? geo.isp : 'Unknown ISP';
+    const isResidential = isResidentialISP(isp);
+
+    // 计算纯净度
+    let purityScore = 60;
+    if (latency < 300) purityScore += 10;
+    if (isResidential) purityScore += 25;
+    if (countryCode === 'US' || countryCode === 'SG' || countryCode === 'JP') purityScore += 15;
+    purityScore = Math.min(100, purityScore);
+
+    return {
+      id: crypto.randomUUID(),
+      ip, port,
+      protocol: 'HTTPS',
+      country, country_code: countryCode,
+      region, city, isp,
+      is_residential: isResidential ? 1 : 0,
+      anonymity: '透明', // 反代 IP 多数是透明的
+      latency,
+      purity_score: purityScore,
+      cf_pass_prob: 99,
+      last_checked: Date.now(),
+      created_at: Date.now()
+    };
+  }
+  return null;
+}
+
 async function handleScheduled(event, env, ctx) {
-  console.log("开始扫描 Cloudflare ProxyIP...");
+  console.log("开始扫描 Cloudflare ProxyIP (并发批处理模式)...");
   let candidates = [];
   
-  // 1. 获取所有源数据
+  // 1. 获取源
   const fetchPromises = PROXY_SOURCES.map(async (source) => {
     try {
-      // 强制刷新缓存
-      const urlWithCacheBust = `${source.url}?t=${Date.now()}`;
-      console.log(`[Source] 正在获取: ${source.name}`);
-      
-      const response = await fetch(urlWithCacheBust, {
-          headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-          }
+      const url = `${source.url}?t=${Date.now()}`;
+      const response = await fetch(url, {
+          headers: { 'User-Agent': 'Mozilla/5.0 Chrome/120.0.0.0 Safari/537.36' }
       });
 
       if (response.ok) {
         const text = await response.text();
-        // 关键调试信息: 打印前 50 个字符，看看下载了什么
-        const preview = text.substring(0, 50).replace(/\n/g, '\\n');
-        console.log(`[Source] ${source.name} (Status: ${response.status}, Size: ${text.length})`);
-        console.log(`[Preview] ${preview}...`);
-        
-        const ips = extractIPs(text); 
-        console.log(`   └─ 暴力解析出 ${ips.length} 个 IP`);
+        const ips = extractIPs(text);
+        console.log(`[Source] ${source.name}: 状态 ${response.status} (解析: ${ips.length} 个)`);
         return ips;
-      } else {
-        console.warn(`[Source] ${source.name} 失败: ${response.status}`);
       }
     } catch (e) {
-      console.error(`[Source] 错误 ${source.name}:`, e);
+      console.error(`[Source] Error ${source.name}:`, e.message);
     }
     return [];
   });
 
   const results = await Promise.all(fetchPromises);
   results.forEach(ips => candidates.push(...ips));
-
-  // 去重
-  candidates = [...new Set(candidates)];
+  candidates = [...new Set(candidates)]; // 简单去重
   
-  if (candidates.length === 0) {
-    console.error("❌ 严重错误: 所有源均未解析出 IP。请检查日志中的 Preview 信息。");
-    return;
-  }
+  // 2. 预清洗 (过滤内网和 CF 回环)
+  const initialCount = candidates.length;
+  candidates = candidates.filter(ipStr => {
+    const ip = ipStr.split(':')[0];
+    return isValidPublicIp(ip);
+  });
+  console.log(`IP 清洗: ${initialCount} -> ${candidates.length} (候选池)`);
   
-  // 随机抽取 50 个进行验证
-  // Monosans 源有几万个 IP，必须随机抽样，否则永远只验证前几个
-  const batch = candidates.sort(() => Math.random() - 0.5).slice(0, 50);
-  console.log(`本次扫描队列: ${batch.length} 个 IP (从 ${candidates.length} 个候选库中抽取)`);
+  if (candidates.length === 0) return;
 
-  let validCount = 0;
+  // 3. 截取处理队列 (最大 200 个，随机打乱)
+  const queue = candidates.sort(() => Math.random() - 0.5).slice(0, SCAN_LIMIT);
+  console.log(`本次批处理队列: ${queue.length} 个 IP (Batch Size: ${BATCH_SIZE})`);
 
-  for (const line of batch) {
-    if (validCount >= 5) break; // 每次存 5 个，防止超时
-
-    const parts = line.split(':');
-    let ip = parts[0];
-    let port = 443; // 默认端口
-
-    if (parts.length === 2) {
-        // 过滤非数字端口
-        const p = parseInt(parts[1], 10);
-        if (!isNaN(p)) port = p;
+  // 4. 并发批处理验证
+  let validProxies = [];
+  
+  for (let i = 0; i < queue.length; i += BATCH_SIZE) {
+    const chunk = queue.slice(i, i + BATCH_SIZE);
+    // 并行执行当前批次
+    const results = await Promise.all(chunk.map(ip => processIP(ip)));
+    // 收集有效结果
+    const valid = results.filter(r => r !== null);
+    validProxies.push(...valid);
+    
+    if (valid.length > 0) {
+        console.log(`   批次 ${i/BATCH_SIZE + 1}: 发现 ${valid.length} 个有效`);
     }
+  }
 
-    if (!isValidPublicIp(ip)) continue;
+  console.log(`扫描结束。共发现 ${validProxies.length} 个有效 ProxyIP。准备写入数据库...`);
 
-    console.log(`正在验证: ${ip}:${port}...`);
-    const latency = await validateProxyIP(ip, port);
-
-    if (latency !== null) {
-      console.log(`✅ [Valid] ${ip}:${port} (${latency}ms)`);
-      
-      // 验证通过后，查地理位置
-      await delay(800); 
-      const geo = await fetchIpGeo(ip);
-      
-      const country = geo ? geo.country : '未知';
-      const countryCode = geo ? geo.countryCode : 'UN';
-      const city = geo ? geo.city : '';
-      const region = geo ? geo.regionName : '';
-      const isp = geo ? geo.isp : 'Unknown ISP';
-      const isResidential = isResidentialISP(isp);
-
-      // 动态打分
-      let purityScore = 60;
-      if (latency < 300) purityScore += 10;
-      if (isResidential) purityScore += 25; // 家宽大幅加分
-      if (countryCode === 'US') purityScore += 15; // 美国加分
-      
-      purityScore = Math.min(100, Math.max(10, purityScore));
-
-      const id = crypto.randomUUID();
-
-      try {
-        await env.DB.prepare(`
-          INSERT INTO proxies (
-            id, ip, port, protocol, 
-            country, country_code, region, city, isp, 
-            anonymity, latency, purity_score, cf_pass_prob, 
-            last_checked, created_at, is_residential
-          )
+  // 5. 批量写入 D1 (使用 batch 减少数据库交互次数)
+  if (validProxies.length > 0) {
+    try {
+      const statements = validProxies.map(p => {
+        return env.DB.prepare(`
+          INSERT INTO proxies (id, ip, port, protocol, country, country_code, region, city, isp, anonymity, latency, purity_score, cf_pass_prob, last_checked, created_at, is_residential)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(ip, port) DO UPDATE SET
-            latency = excluded.latency,
-            last_checked = excluded.last_checked,
-            purity_score = excluded.purity_score,
+            latency = excluded.latency, 
+            last_checked = excluded.last_checked, 
+            purity_score = excluded.purity_score, 
             is_residential = excluded.is_residential
         `).bind(
-          id, ip, port, 'HTTPS',
-          country, countryCode, region, city, isp,
-          '透明', latency, purityScore, 99,
-          Date.now(), Date.now(), isResidential ? 1 : 0
-        ).run();
-        
-        validCount++;
-      } catch (dbErr) {
-        console.error("入库失败", dbErr);
+          p.id, p.ip, p.port, p.protocol, p.country, p.country_code, p.region, p.city, p.isp,
+          p.anonymity, p.latency, p.purity_score, p.cf_pass_prob, p.last_checked, p.created_at, p.is_residential
+        );
+      });
+
+      // D1 的 batch 限制通常是 128 条左右，如果非常多，建议再分片
+      const dbChunks = [];
+      const DB_BATCH_LIMIT = 50; 
+      for (let i = 0; i < statements.length; i += DB_BATCH_LIMIT) {
+          dbChunks.push(statements.slice(i, i + DB_BATCH_LIMIT));
       }
+
+      for (const chunk of dbChunks) {
+          await env.DB.batch(chunk);
+      }
+      
+      console.log("数据库写入成功！");
+    } catch (err) {
+      console.error('DB Batch Error', err);
     }
   }
-  
-  console.log(`任务结束，入库 ${validCount} 个`);
 }
 
 async function handleRequest(request, env) {
   const url = new URL(request.url);
   const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET',
     'Access-Control-Allow-Headers': 'Content-Type',
   };
 
-  if (request.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders });
-  }
-
   if (url.pathname === '/api/proxies') {
     try {
+      // 增加 is_residential 排序权重
       const { results } = await env.DB.prepare(
-        "SELECT * FROM proxies ORDER BY purity_score DESC LIMIT 100"
+        "SELECT * FROM proxies ORDER BY is_residential DESC, purity_score DESC LIMIT 100"
       ).all();
       
       const formatted = results.map((row) => ({
@@ -361,14 +368,10 @@ async function handleRequest(request, env) {
     }
   }
 
-  return new Response("Not Found", { status: 404, headers: corsHeaders });
+  return new Response("PureProxy Worker API (Batch Mode)", { headers: corsHeaders });
 }
 
 export default {
-  async fetch(request, env, ctx) {
-    return handleRequest(request, env);
-  },
-  async scheduled(event, env, ctx) {
-    ctx.waitUntil(handleScheduled(event, env, ctx));
-  }
+  async fetch(request, env, ctx) { return handleRequest(request, env); },
+  async scheduled(event, env, ctx) { ctx.waitUntil(handleScheduled(event, env, ctx)); }
 };

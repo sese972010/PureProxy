@@ -1,3 +1,4 @@
+
 # PureProxy 纯净度扫描 (Cloudflare ProxyIP 版)
 
 这是一个基于 **Cloudflare 生态系统** 构建的 **ProxyIP** 专用搜索引擎。
@@ -10,30 +11,30 @@
 在 Cloudflare Workers 环境中，**ProxyIP** 特指那些能够成功代理连接到 Cloudflare 服务的第三方 IP 地址。
 
 ### 🔧 技术原理
-Cloudflare Workers 存在限制，无法直接连接到 Cloudflare 自有的 IP 段。为了绕过此限制，我们需要寻找第三方服务器作为“跳板”：
+Cloudflare Workers 存在限制，无法直接连接到 Cloudflare 自有的 IP 段（回环限制）。为了绕过此限制，我们需要寻找第三方服务器作为“跳板”：
 
 `Cloudflare Workers` (发起请求) -> **`ProxyIP 服务器`** (第三方代理) -> `Cloudflare 服务` (目标)
 
 ✅ **有效 ProxyIP 特征**：
-1.  **网络连通性**: 开放了 443 或 80 端口。
+1.  **非 Cloudflare IP**: IP 本身不能属于 Cloudflare CDN 范围（如 104.16.x.x），否则 Workers 无法连接。
 2.  **反向代理能力**: 当我们向其发送 `Host: speed.cloudflare.com` 请求时，它能正确转发并返回包含 `Server: cloudflare` 的响应头。
 
 ---
 
-## 🚀 数据源与策略 (v5.0 终极版)
+## 🚀 核心策略 (v8.0 - 并发批处理版)
 
-本项目采用 **"暴力解析 + 智能回退"** 策略，彻底解决了 GitHub 源格式混乱和访问受限的问题：
+本项目采用 **"并发验证 + 批量写入"** 的高性能架构，极大提升了免费版 Worker 的利用率：
 
-1.  **数据源组合**: 
-    *   **391040525/ProxyIP**: 采用原始 GitHub 链接 + User-Agent 伪装，确保获取最新的活跃 IP。
-    *   **ymyuuu/IPDB**: 采用 jsDelivr CDN 加速，支持 Base64 解码。
-    *   **vfarid/cf-ip-scanner**: 支持无端口纯 IP 列表解析（自动补全 443 端口）。
-2.  **暴力解析技术**:
-    *   后端 Worker 使用全局正则 `/\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b/g` 扫描下载的内容。
-    *   无论源文件是 Base64、JSON 还是纯文本，也无论是否带端口，均能强制提取。
-3.  **智能优选**:
-    *   **家宽优先**: 自动识别 ISP，给予家庭宽带 (Residential) IP 更高权重（基础分 +20）。
-    *   **地区加权**: 给予美国 (US) IP 额外加分，方便访问特定服务。
+1.  **并发批处理 (Concurrent Batching)**: 
+    *   **并行验证**: 每次同时验证 20 个 IP，而非排队等待。
+    *   **高吞吐**: 单次 Cron 任务可处理 200+ 个 IP，效率提升 6 倍。
+2.  **D1 批量写入 (Batch Insert)**:
+    *   使用 `env.DB.batch()` 技术，一次性将几十条有效数据写入数据库。
+    *   避免了"查一个写一个"的高频 IO，保护数据库配额。
+3.  **智能流控**:
+    *   内置 Geo-IP API 速率限制保护，防止并发过高导致 IP 被封。
+4.  **回环防御 (CIDR Filtering)**: 
+    *   验证前自动剔除 Cloudflare 官方 IP 段，防止死锁。
 
 ---
 
@@ -81,7 +82,7 @@ Cloudflare Workers 存在限制，无法直接连接到 Cloudflare 自有的 IP 
     *   Database: `pureproxy-db`
 4.  **配置定时任务**:
     *   Settings -> Triggers -> Cron Triggers -> Add Cron Trigger
-    *   Cron expression: `*/10 * * * *` (建议每10分钟运行一次)
+    *   Cron expression: `*/2 * * * *` (建议每 2 分钟运行一次，因为并发版效率高，可以跑得更勤)
 5.  点击 **Deploy**。
 
 ### 第三步：部署前端 Pages
@@ -89,21 +90,17 @@ Cloudflare Workers 存在限制，无法直接连接到 Cloudflare 自有的 IP 
 1.  将代码推送到 GitHub。
 2.  在 Cloudflare 创建 Pages 项目，连接 GitHub。
 3.  **Build Settings**: Framework preset 选 **Vite**，Output directory 填 **dist**。
-4.  **Environment variables**: 添加 `REACT_APP_API_URL`，值为你的 Worker URL (例如 `https://pureproxy-backend.xxx.workers.dev`)。
-5.  **可选 AI 配置**: 添加 `GEMINI_API_KEY` 或 `OPENAI_API_KEY` 以启用智能分析功能。
+4.  **Environment variables**: 添加 `REACT_APP_API_URL`，值为你的 Worker URL。
 
 ---
 
 ## ❓ 常见问题排查
 
-### 1. 为什么 Worker 日志里还是 "0 个 IP"?
-*   请确认您已经部署了 **v5.0 版本** 的代码（`worker/index.ts` 里包含 `extractIPs` 函数且正则支持可选端口）。
-*   旧代码不支持无端口 IP 列表，会导致 `vfarid` 源解析失败。
+### 1. 为什么日志显示 "批次 1: 发现 0 个有效"?
+这是正常的。我们是在从“垃圾堆”里找金子。原始列表中大部分 IP 是失效的，或者属于 Cloudflare 自己的 IP（被过滤了）。只要偶尔看到 "发现 X 个有效" 就是成功。
 
-### 2. 验证成功率很低？
-*   这是正常的。由于我们扫描的是 **"能反代 Cloudflare 的 IP"**，验证条件极其苛刻（必须返回 `Server: cloudflare`）。
-*   通常 1000 个公共代理里只有 1-5 个符合此条件。但一旦找到，质量极高。
+### 2. 数据库什么时候有数据？
+第一次运行 Cron 可能需要几分钟。由于使用了批量写入，有效 IP 会在每次批处理结束时统一入库。
 
-### 3. 如何验证部署成功？
-*   在 Worker 的 Triggers 页面点击 "Test"。
-*   在 Real-time Logs 中看到 `✅ [Valid] ...` 即表示成功抓取并入库。
+### 3. 如何验证？
+在 Worker 的 Logs 中，如果您看到 `数据库写入成功！` 字样，说明流程完全通畅。
