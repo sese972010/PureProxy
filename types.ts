@@ -35,6 +35,7 @@ export interface ProxyIP {
   cloudflarePassProbability: number; // 0-100
   riskLevel: RiskLevel;
   isp: string;
+  isResidential?: boolean; // New: Is Residential ISP
   lastChecked: number | Date; // Allow number (timestamp from DB) or Date object
 }
 

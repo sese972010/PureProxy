@@ -9,7 +9,9 @@ import {
   Info,
   ArrowUpDown,
   ArrowUp,
-  ArrowDown
+  ArrowDown,
+  Home,
+  Building2
 } from 'lucide-react';
 import { fetchProxies } from './services/proxyService';
 import { ProxyIP, FilterState, ProxyProtocol, AnonymityLevel } from './types';
@@ -137,10 +139,10 @@ function App() {
         <div className="mb-8 space-y-6">
           <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
             <div>
-              <h1 className="text-3xl font-bold text-white mb-2">全球代理 IP 数据库</h1>
+              <h1 className="text-3xl font-bold text-white mb-2">Cloudflare ProxyIP 数据库</h1>
               <p className="text-gray-400 max-w-2xl">
-                实时代理扫描与 AI 驱动的纯净度验证。
-                完美兼容 Cloudflare Workers 部署。
+                基于 391040525/ProxyIP 等权威数据源。
+                筛选可反向代理 Cloudflare 服务的优质 IP，支持家宽/数据中心识别。
               </p>
             </div>
             <div className="flex items-center gap-3 text-sm text-gray-500 font-mono">
@@ -169,17 +171,6 @@ function App() {
             <div className="flex items-center gap-2 w-full md:w-auto overflow-x-auto pb-1 md:pb-0">
               <select 
                 className="bg-gray-900 border border-gray-700 text-gray-300 text-sm rounded-lg focus:ring-emerald-500 focus:border-emerald-500 block p-2.5"
-                onChange={(e) => setFilters(prev => ({ ...prev, protocol: e.target.value as ProxyProtocol || undefined }))}
-              >
-                <option value="">所有协议</option>
-                <option value={ProxyProtocol.HTTP}>HTTP</option>
-                <option value={ProxyProtocol.HTTPS}>HTTPS</option>
-                <option value={ProxyProtocol.SOCKS4}>SOCKS4</option>
-                <option value={ProxyProtocol.SOCKS5}>SOCKS5</option>
-              </select>
-
-              <select 
-                className="bg-gray-900 border border-gray-700 text-gray-300 text-sm rounded-lg focus:ring-emerald-500 focus:border-emerald-500 block p-2.5"
                 onChange={(e) => setFilters(prev => ({ ...prev, minPurity: Number(e.target.value) }))}
               >
                 <option value="0">不限分数</option>
@@ -204,7 +195,7 @@ function App() {
             <table className="w-full text-sm text-left text-gray-400">
               <thead className="text-xs text-gray-500 uppercase bg-gray-900/50 border-b border-gray-700">
                 <tr>
-                  <th scope="col" className="px-6 py-4 font-medium">IP 地址</th>
+                  <th scope="col" className="px-6 py-4 font-medium">IP 地址 / ISP</th>
                   <th 
                     scope="col" 
                     className="px-6 py-4 font-medium cursor-pointer hover:text-white hover:bg-gray-800 transition-colors"
@@ -214,8 +205,7 @@ function App() {
                       地理位置 {getSortIcon('country')}
                     </div>
                   </th>
-                  <th scope="col" className="px-6 py-4 font-medium">协议</th>
-                  <th scope="col" className="px-6 py-4 font-medium hidden sm:table-cell">匿名度</th>
+                  <th scope="col" className="px-6 py-4 font-medium">类型</th>
                   <th 
                     scope="col" 
                     className="px-6 py-4 font-medium text-right cursor-pointer hover:text-white hover:bg-gray-800 transition-colors"
@@ -245,7 +235,6 @@ function App() {
                       <td className="px-6 py-4"><div className="h-4 bg-gray-700 rounded w-32"></div></td>
                       <td className="px-6 py-4"><div className="h-4 bg-gray-700 rounded w-24"></div></td>
                       <td className="px-6 py-4"><div className="h-4 bg-gray-700 rounded w-16"></div></td>
-                      <td className="px-6 py-4"><div className="h-4 bg-gray-700 rounded w-20"></div></td>
                       <td className="px-6 py-4"><div className="h-4 bg-gray-700 rounded w-12 ml-auto"></div></td>
                       <td className="px-6 py-4"><div className="h-6 bg-gray-700 rounded w-16 mx-auto"></div></td>
                       <td className="px-6 py-4"><div className="h-8 bg-gray-700 rounded w-8 mx-auto"></div></td>
@@ -253,9 +242,9 @@ function App() {
                   ))
                 ) : filteredAndSortedProxies.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-6 py-12 text-center text-gray-500">
+                    <td colSpan={6} className="px-6 py-12 text-center text-gray-500">
                       <Filter className="w-12 h-12 mx-auto mb-3 opacity-20" />
-                      未找到符合条件的代理 IP。
+                      未找到符合条件的 ProxyIP。请等待 Worker 后台任务运行。
                     </td>
                   </tr>
                 ) : (
@@ -265,27 +254,39 @@ function App() {
                       className="border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors group cursor-pointer"
                       onClick={() => setSelectedProxy(proxy)}
                     >
-                      <td className="px-6 py-4 font-mono text-gray-200">
-                        {proxy.ip}
-                        <span className="text-gray-500 ml-1">:{proxy.port}</span>
+                      <td className="px-6 py-4">
+                        <div className="font-mono text-gray-200">
+                          {proxy.ip}
+                          <span className="text-gray-500 ml-1">:{proxy.port}</span>
+                        </div>
+                        <div className="text-xs text-gray-500 mt-1 flex items-center gap-1">
+                           {proxy.isp || 'Unknown ISP'}
+                        </div>
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-2">
                           <span className="text-lg" role="img" aria-label={proxy.country}>
                             <Globe size={16} className="text-blue-400" />
                           </span>
-                          <span>{proxy.countryCode}</span>
+                          <div>
+                            <div className="text-gray-300">{proxy.countryCode}</div>
+                            {proxy.city && <div className="text-xs text-gray-500">{proxy.city}</div>}
+                          </div>
                         </div>
                       </td>
                       <td className="px-6 py-4">
-                        <span className={`px-2 py-1 rounded text-xs font-semibold
-                          ${proxy.protocol.includes('SOCKS') ? 'bg-purple-500/10 text-purple-400 border border-purple-500/20' : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'}
-                        `}>
-                          {proxy.protocol}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 hidden sm:table-cell">
-                        <span className="text-gray-400">{proxy.anonymity}</span>
+                        <div className="flex flex-col gap-1 items-start">
+                          {proxy.isResidential ? (
+                            <span className="flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                              <Home size={10} /> 家宽
+                            </span>
+                          ) : (
+                             <span className="flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-gray-600/20 text-gray-400 border border-gray-600/30">
+                              <Building2 size={10} /> 数据中心
+                            </span>
+                          )}
+                          <span className="text-[10px] text-gray-500 font-mono">HTTPS 反代</span>
+                        </div>
                       </td>
                       <td className="px-6 py-4 text-right font-mono text-gray-300">
                         <div className="flex items-center justify-end gap-2">
@@ -314,7 +315,7 @@ function App() {
               显示 {filteredAndSortedProxies.length} 个结果
             </span>
             <div className="text-xs text-gray-600 font-mono">
-              Powered by Cloudflare Workers & Gemini
+              数据源: 391040525/ProxyIP
             </div>
           </div>
         </div>
