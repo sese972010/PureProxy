@@ -1,20 +1,20 @@
 import { connect } from 'cloudflare:sockets';
 
-// 核心数据源 (使用 jsDelivr CDN 加速，解决 GitHub Raw 访问不稳定的问题)
+// 数据源配置
 const PROXY_SOURCES = [
   {
     name: '391040525/ProxyIP (Active - 推荐)',
-    // 原地址: raw.githubusercontent.com/391040525/ProxyIP/main/active.txt
-    url: 'https://cdn.jsdelivr.net/gh/391040525/ProxyIP@main/active.txt' 
+    // 针对此源回退到原始 GitHub 地址配合 UA 伪装，解决 jsDelivr 可能的同步延迟导致的 404
+    url: 'https://raw.githubusercontent.com/391040525/ProxyIP/main/active.txt' 
   },
   {
     name: 'ymyuuu/IPDB (Best Proxy)',
-    // 原地址: raw.githubusercontent.com/ymyuuu/IPDB/main/bestproxy.txt
+    // 聚合源通常比较大，使用 jsDelivr 加速
     url: 'https://cdn.jsdelivr.net/gh/ymyuuu/IPDB@main/bestproxy.txt'
   },
   {
     name: 'vfarid/cf-ip-scanner',
-    // 原地址: raw.githubusercontent.com/vfarid/cf-ip-scanner/master/ipv4.txt
+    // 这是一个纯 IP 列表（无端口），需要代码逻辑支持自动补全端口
     url: 'https://cdn.jsdelivr.net/gh/vfarid/cf-ip-scanner@master/ipv4.txt'
   }
 ];
@@ -31,31 +31,32 @@ const withTimeout = (promise, ms) => {
 };
 
 /**
- * 暴力提取 IP:Port
- * 无论内容是 Base64、JSON 还是普通文本，只要有 IP:Port 格式就能提出来
+ * 暴力提取 IP
+ * 支持 IP:Port 格式，也支持纯 IP 格式
  */
 function extractIPs(text) {
   if (!text) return [];
   const candidates = new Set();
   
-  // 1. 尝试 Base64 解码
+  // 正则升级: (?::\d+)? 表示端口部分是可选的
+  // 匹配: 192.168.1.1 或 192.168.1.1:8080
+  const regex = /\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b/g;
+  
+  // 1. 尝试 Base64 解码 (针对 IPDB 等订阅链接)
   try {
-    // 移除可能存在的空白字符，提高解码成功率
     const cleanText = text.replace(/\s/g, '');
     if (cleanText.length > 20) {
       const decoded = atob(cleanText);
-      // 正则提取解码后内容中的 IP
-      const decodedMatches = decoded.match(/\b(?:\d{1,3}\.){3}\d{1,3}:\d+\b/g);
+      const decodedMatches = decoded.match(regex);
       if (decodedMatches) {
         decodedMatches.forEach(ip => candidates.add(ip));
       }
     }
   } catch (e) {
-    // 解码失败忽略
+    // 解码失败忽略，继续尝试原文匹配
   }
 
   // 2. 原文暴力匹配 (应对纯文本列表)
-  const regex = /\b(?:\d{1,3}\.){3}\d{1,3}:\d+\b/g;
   const matches = text.match(regex);
   if (matches) {
     matches.forEach(ip => candidates.add(ip));
@@ -150,8 +151,9 @@ async function validateProxyIP(ip, port = 443) {
     }(), 1500); // 连接超时
 
     // 发送 Cloudflare 探测包
+    // Host: speed.cloudflare.com 是验证 ProxyIP 的标准靶标
     const request = new TextEncoder().encode(
-      `GET / HTTP/1.1\r\nHost: speed.cloudflare.com\r\nConnection: close\r\nUser-Agent: PureProxy/1.0\r\n\r\n`
+      `GET / HTTP/1.1\r\nHost: speed.cloudflare.com\r\nConnection: close\r\nUser-Agent: PureProxy/ScanBot\r\n\r\n`
     );
     await writer.write(request);
 
@@ -167,7 +169,8 @@ async function validateProxyIP(ip, port = 443) {
       }
     }(), 2500); 
 
-    // 检查是否包含 Cloudflare 特征头
+    // 检查是否包含 Cloudflare 特征头 (Server: cloudflare)
+    // 这是判断 IP 是否能反代 Cloudflare 的黄金标准
     const isCloudflare = responseText.toLowerCase().includes('server: cloudflare');
     
     if (isCloudflare) {
@@ -189,16 +192,16 @@ async function handleScheduled(event, env, ctx) {
   console.log("开始扫描 Cloudflare ProxyIP...");
   let candidates = [];
   
-  // 1. 从公共源获取 (使用 jsDelivr CDN)
+  // 1. 从公共源获取
   const fetchPromises = PROXY_SOURCES.map(async (source) => {
     try {
-      // 强制添加时间戳参数，防止 CDN 缓存
-      const urlWithCacheBust = `${source.url}?t=${Date.now()}`;
+      // 强制添加时间戳参数，防止缓存 (如果是 GitHub Raw 需要这个来获取最新)
+      const urlWithCacheBust = source.url.includes('?') ? `${source.url}&t=${Date.now()}` : `${source.url}?t=${Date.now()}`;
       console.log(`[Source] 正在获取: ${source.name}`);
       
       const response = await fetch(urlWithCacheBust, {
           headers: {
-              // 模拟真实浏览器，防止 GitHub/CDN 拦截
+              // 模拟真实浏览器 User-Agent，这是访问 GitHub Raw 的关键
               'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
           }
       });
@@ -208,7 +211,7 @@ async function handleScheduled(event, env, ctx) {
         console.log(`[Source] ${source.name} 状态码: ${response.status}, 内容长度: ${text.length}`);
         
         if (text.length < 50) {
-             console.warn(`[Source] 内容过短，可能获取失败: ${text}`);
+             console.warn(`[Source] 内容过短，可能获取失败: ${text.substring(0, 100)}`);
         }
 
         const ips = extractIPs(text); 
@@ -234,17 +237,23 @@ async function handleScheduled(event, env, ctx) {
     return;
   }
   
-  // 随机抽取 50 个进行验证
-  const batch = candidates.sort(() => Math.random() - 0.5).slice(0, 50);
+  // 随机抽取 40 个进行验证 (避免超时)
+  const batch = candidates.sort(() => Math.random() - 0.5).slice(0, 40);
   console.log(`本次扫描队列: ${batch.length} 个 IP (从 ${candidates.length} 个中随机抽取)`);
 
   let validCount = 0;
 
   for (const line of batch) {
-    if (validCount >= 8) break; 
+    if (validCount >= 6) break; // 每次最多入库 6 个，细水长流
 
-    const [ip, portStr] = line.split(':');
-    const port = parseInt(portStr);
+    // 兼容带端口和不带端口的情况
+    const parts = line.split(':');
+    let ip = parts[0];
+    let port = 443; // 默认端口
+
+    if (parts.length === 2) {
+        port = parseInt(parts[1], 10);
+    }
 
     if (!isValidPublicIp(ip)) continue;
 
@@ -254,7 +263,7 @@ async function handleScheduled(event, env, ctx) {
     if (latency !== null) {
       console.log(`✅ [Valid] ${ip}:${port} (${latency}ms)`);
       
-      await delay(1000); 
+      await delay(1000); // 避免 Geo API 速率限制
       const geo = await fetchIpGeo(ip);
       
       const country = geo ? geo.country : '未知';
@@ -264,10 +273,11 @@ async function handleScheduled(event, env, ctx) {
       const isp = geo ? geo.isp : 'Unknown ISP';
       const isResidential = isResidentialISP(isp);
 
+      // 智能打分策略
       let purityScore = 60;
       if (latency < 300) purityScore += 15;
-      if (isResidential) purityScore += 20;
-      if (countryCode === 'US') purityScore += 15;
+      if (isResidential) purityScore += 20; // 家宽加分
+      if (countryCode === 'US') purityScore += 15; // 美国加分
       
       purityScore = Math.min(100, Math.max(10, purityScore));
 
@@ -318,6 +328,7 @@ async function handleRequest(request, env) {
 
   if (url.pathname === '/api/proxies') {
     try {
+      // 优先展示高分、家宽 IP
       const { results } = await env.DB.prepare(
         "SELECT * FROM proxies ORDER BY purity_score DESC, is_residential DESC LIMIT 100"
       ).all();

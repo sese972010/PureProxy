@@ -20,16 +20,19 @@ Cloudflare Workers 存在限制，无法直接连接到 Cloudflare 自有的 IP 
 
 ---
 
-## 🚀 数据源与策略
+## 🚀 数据源与策略 (v5.0 终极版)
 
-本项目目前采用 **开源聚合 + CDN 加速 + 暴力解析** 的策略，彻底解决了单一数据源不稳定或格式解析失败的问题：
+本项目采用 **"暴力解析 + 智能回退"** 策略，彻底解决了 GitHub 源格式混乱和访问受限的问题：
 
-1.  **核心聚合源 (CDN 加速)**: 
-    *   通过 `jsDelivr` CDN 镜像访问 `391040525/ProxyIP` 和 `ymyuuu/IPDB`，确保 100% 下载成功率。
+1.  **数据源组合**: 
+    *   **391040525/ProxyIP**: 采用原始 GitHub 链接 + User-Agent 伪装，确保获取最新的活跃 IP。
+    *   **ymyuuu/IPDB**: 采用 jsDelivr CDN 加速，支持 Base64 解码。
+    *   **vfarid/cf-ip-scanner**: 支持无端口纯 IP 列表解析（自动补全 443 端口）。
 2.  **暴力解析技术**:
-    *   后端 Worker 使用全局正则扫描下载的内容，无论源文件是 Base64 编码、JSON 格式还是纯文本，均能强制提取出 IP 列表。
+    *   后端 Worker 使用全局正则 `/\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b/g` 扫描下载的内容。
+    *   无论源文件是 Base64、JSON 还是纯文本，也无论是否带端口，均能强制提取。
 3.  **智能优选**:
-    *   **家宽优先**: 自动识别 ISP，给予家庭宽带 (Residential) IP 更高权重。
+    *   **家宽优先**: 自动识别 ISP，给予家庭宽带 (Residential) IP 更高权重（基础分 +20）。
     *   **地区加权**: 给予美国 (US) IP 额外加分，方便访问特定服务。
 
 ---
@@ -87,18 +90,19 @@ Cloudflare Workers 存在限制，无法直接连接到 Cloudflare 自有的 IP 
 2.  在 Cloudflare 创建 Pages 项目，连接 GitHub。
 3.  **Build Settings**: Framework preset 选 **Vite**，Output directory 填 **dist**。
 4.  **Environment variables**: 添加 `REACT_APP_API_URL`，值为你的 Worker URL (例如 `https://pureproxy-backend.xxx.workers.dev`)。
+5.  **可选 AI 配置**: 添加 `GEMINI_API_KEY` 或 `OPENAI_API_KEY` 以启用智能分析功能。
 
 ---
 
 ## ❓ 常见问题排查
 
-### 1. 日志显示 "暴力解析出 0 个 IP"
-*   请确认您部署了最新版代码（使用了 `cdn.jsdelivr.net`）。
-*   旧版直接连接 GitHub 会被限流。
+### 1. 为什么 Worker 日志里还是 "0 个 IP"?
+*   请确认您已经部署了 **v5.0 版本** 的代码（`worker/index.ts` 里包含 `extractIPs` 函数且正则支持可选端口）。
+*   旧代码不支持无端口 IP 列表，会导致 `vfarid` 源解析失败。
 
-### 2. 为什么扫描到的 IP 很少？
-*   ProxyIP 的验证非常严格（必须能反代 Cloudflare）。市面上 99% 的普通代理都无法通过此验证。
-*   为了防止 Worker 超时，每次任务只验证一小批随机抽取的 IP。随着时间推移，数据库中的有效 IP 会越来越多。
+### 2. 验证成功率很低？
+*   这是正常的。由于我们扫描的是 **"能反代 Cloudflare 的 IP"**，验证条件极其苛刻（必须返回 `Server: cloudflare`）。
+*   通常 1000 个公共代理里只有 1-5 个符合此条件。但一旦找到，质量极高。
 
 ### 3. 如何验证部署成功？
 *   在 Worker 的 Triggers 页面点击 "Test"。
