@@ -1,3 +1,4 @@
+
 import { ProxyIP, ProxyProtocol, AnonymityLevel, RiskLevel } from '../types';
 import { MOCK_COUNTRIES, MOCK_ISPS } from '../constants';
 
@@ -10,53 +11,73 @@ const generateId = () => Math.random().toString(36).substr(2, 9);
 const API_BASE_URL = process.env.REACT_APP_API_URL || ''; 
 
 /**
- * 获取代理列表
+ * 获取代理列表 (从数据库)
  */
 export const fetchProxies = async (): Promise<ProxyIP[]> => {
-  // 如果配置了 API URL，优先请求后端
   if (API_BASE_URL || window.location.hostname.includes('workers.dev')) {
     try {
       const url = API_BASE_URL ? `${API_BASE_URL}/api/proxies` : '/api/proxies';
-      console.log(`[ProxyService] 正在请求后端 Cloudflare ProxyIP 数据: ${url}`);
-      
       const response = await fetch(url);
-      
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       
       const data = await response.json();
-      console.log(`[ProxyService] 后端响应数据类型:`, Array.isArray(data) ? 'Array' : typeof data);
-
-      if (Array.isArray(data) && data.length > 0) {
-        console.log(`[ProxyService] 成功从后端获取 ${data.length} 个 ProxyIP (真实数据)`);
+      if (Array.isArray(data)) {
         return data.map((item: any) => ({
           ...item,
           lastChecked: new Date(item.lastChecked)
         }));
-      } else {
-        console.warn("[ProxyService] 后端返回了空数组，可能 Worker 尚未抓取到有效 IP。建议去 Cloudflare 触发 Cron Test。");
       }
     } catch (error) {
-      console.warn("[ProxyService] 请求后端 API 失败，将切换到模拟模式。", error);
-      console.warn("请检查: 1. Worker 是否部署成功 2. D1 数据库是否已初始化 3. REACT_APP_API_URL 环境变量是否正确");
+      console.warn("fetchProxies failed, switching to mock", error);
     }
-  } else {
-    console.log("[ProxyService] 未配置 API_URL，使用纯前端模拟模式。");
   }
-
-  // Fallback: 生成 50 条模拟数据
-  console.log("[ProxyService] 生成 50 条模拟数据用于演示");
-  return generateMockProxies(50);
+  return []; // 初始返回空，等待用户输入
 };
 
-// 生成模拟数据
+/**
+ * 手动分析 IP 列表
+ */
+export const analyzeCustomIPs = async (ips: string[]): Promise<ProxyIP[]> => {
+  // 如果没有配置后端，直接使用模拟数据返回（演示用）
+  if (!API_BASE_URL && !window.location.hostname.includes('workers.dev')) {
+    console.warn("No Backend configured. Using mock analysis.");
+    return Promise.resolve(generateMockProxies(ips.length));
+  }
+
+  const url = API_BASE_URL ? `${API_BASE_URL}/api/analyze` : '/api/analyze';
+  
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ ips })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Analysis failed: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return data.map((item: any) => ({
+      ...item,
+      lastChecked: new Date(item.lastChecked)
+    }));
+
+  } catch (error) {
+    console.error("Analyze API error:", error);
+    throw error;
+  }
+};
+
+// 生成模拟数据 (Fallback)
 const generateMockProxies = (count: number): ProxyIP[] => {
   const proxies: ProxyIP[] = [];
   for (let i = 0; i < count; i++) {
     const countryData = randomItem(MOCK_COUNTRIES);
     const purityScore = randomInt(40, 95);
-    const isResidential = Math.random() > 0.7; // 30% 几率是家宽
+    const isResidential = Math.random() > 0.7; 
     
     proxies.push({
       id: generateId(),
@@ -67,11 +88,11 @@ const generateMockProxies = (count: number): ProxyIP[] => {
       countryCode: countryData.code,
       region: '模拟省份',
       city: '模拟城市',
-      anonymity: AnonymityLevel.TRANSPARENT, // ProxyIP 本质是反代
+      anonymity: AnonymityLevel.ELITE,
       latency: randomInt(20, 800),
       uptime: 90,
       purityScore: purityScore,
-      cloudflarePassProbability: 99, // ProxyIP 通常都能过 CF
+      cloudflarePassProbability: purityScore > 80 ? 99 : 50,
       riskLevel: purityScore > 80 ? RiskLevel.LOW : RiskLevel.MEDIUM,
       isp: randomItem(MOCK_ISPS),
       isResidential: isResidential,
@@ -79,9 +100,4 @@ const generateMockProxies = (count: number): ProxyIP[] => {
     });
   }
   return proxies;
-};
-
-export const checkProxyLiveStatus = async (ip: string, port: number): Promise<boolean> => {
-  await new Promise(resolve => setTimeout(resolve, 1500));
-  return Math.random() > 0.5; 
 };

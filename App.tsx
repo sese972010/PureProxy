@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Search, 
@@ -13,9 +14,11 @@ import {
   Home,
   Building2,
   MapPin,
-  Network
+  Network,
+  Clipboard,
+  Play
 } from 'lucide-react';
-import { fetchProxies } from './services/proxyService';
+import { fetchProxies, analyzeCustomIPs } from './services/proxyService';
 import { ProxyIP, FilterState, ProxyProtocol, AnonymityLevel } from './types';
 import PurityBadge from './components/PurityBadge';
 import DetailModal from './components/DetailModal';
@@ -29,8 +32,10 @@ interface SortConfig {
 
 function App() {
   const [proxies, setProxies] = useState<ProxyIP[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
   const [selectedProxy, setSelectedProxy] = useState<ProxyIP | null>(null);
+  const [manualInput, setManualInput] = useState('');
   
   // Sorting State
   const [sortConfig, setSortConfig] = useState<SortConfig>({ key: 'purityScore', direction: 'desc' });
@@ -48,7 +53,9 @@ function App() {
     setLoading(true);
     try {
       const data = await fetchProxies();
-      setProxies(data);
+      if (data.length > 0) {
+        setProxies(data);
+      }
     } catch (error) {
       console.error("无法获取代理列表", error);
     } finally {
@@ -60,6 +67,37 @@ function App() {
     loadData();
   }, []);
 
+  const handleManualAnalyze = async () => {
+    if (!manualInput.trim()) return;
+    setAnalyzing(true);
+    
+    // Split by newlines or commas
+    const lines = manualInput
+      .split(/[\n,]/)
+      .map(s => s.trim())
+      .filter(s => s.length > 5); // Basic filter
+
+    if (lines.length === 0) {
+      setAnalyzing(false);
+      return;
+    }
+
+    try {
+      const results = await analyzeCustomIPs(lines);
+      // Merge results: 新的结果在最前，旧的结果保留但去重
+      setProxies(prev => {
+        const newIds = new Set(results.map(r => r.ip + r.port));
+        const keptPrev = prev.filter(p => !newIds.has(p.ip + p.port));
+        return [...results, ...keptPrev];
+      });
+      setManualInput(''); // Clear input on success
+    } catch (err) {
+      alert("分析失败，请检查 Worker 是否配置正确或 IP 格式是否正确");
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
   // 动态提取现有数据中的所有国家列表
   const uniqueCountries = useMemo(() => {
     const countryMap = new Map<string, string>();
@@ -70,7 +108,6 @@ function App() {
         }
       }
     });
-    // 按名称排序
     return Array.from(countryMap.entries()).sort((a, b) => a[1].localeCompare(b[1]));
   }, [proxies]);
 
@@ -101,11 +138,7 @@ function App() {
       
       const matchesProtocol = filters.protocol ? p.protocol === filters.protocol : true;
       const matchesPurity = filters.minPurity ? p.purityScore >= filters.minPurity : true;
-      
-      // Country Filter
       const matchesCountry = filters.country ? p.countryCode === filters.country : true;
-
-      // Type Filter (Residential vs Datacenter)
       const matchesType = filters.isResidential !== undefined 
         ? p.isResidential === filters.isResidential 
         : true;
@@ -117,17 +150,10 @@ function App() {
     result.sort((a, b) => {
       let aValue = a[sortConfig.key];
       let bValue = b[sortConfig.key];
-
-      // Handle undefined
       if (aValue === undefined) return 1;
       if (bValue === undefined) return -1;
-
-      if (aValue < bValue) {
-        return sortConfig.direction === 'asc' ? -1 : 1;
-      }
-      if (aValue > bValue) {
-        return sortConfig.direction === 'asc' ? 1 : -1;
-      }
+      if (aValue < bValue) return sortConfig.direction === 'asc' ? -1 : 1;
+      if (aValue > bValue) return sortConfig.direction === 'asc' ? 1 : -1;
       return 0;
     });
 
@@ -147,12 +173,9 @@ function App() {
             <span className="font-bold text-xl tracking-tight text-white">PureProxy<span className="text-emerald-500">.scan</span></span>
           </div>
           <div className="flex items-center gap-4">
-             <a href="https://github.com" target="_blank" rel="noreferrer" className="text-gray-400 hover:text-white transition-colors text-sm font-medium">
-                GitHub 仓库
+             <a href="https://github.com/sese972010/PureProxy" target="_blank" rel="noreferrer" className="text-gray-400 hover:text-white transition-colors text-sm font-medium">
+                GitHub
              </a>
-             <button className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-1.5 rounded-full text-sm font-medium transition-all shadow-lg shadow-emerald-900/40">
-                API 接入
-             </button>
           </div>
         </div>
       </nav>
@@ -160,99 +183,108 @@ function App() {
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         
-        {/* Header & Search */}
-        <div className="mb-8 space-y-6">
-          <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
-            <div>
-              <h1 className="text-3xl font-bold text-white mb-2">Cloudflare ProxyIP 数据库</h1>
-              <p className="text-gray-400 max-w-2xl">
-                基于 391040525/ProxyIP 等权威数据源。
-                筛选可反向代理 Cloudflare 服务的优质 IP，支持家宽/数据中心识别。
-              </p>
+        {/* Header */}
+        <div className="mb-6">
+          <h1 className="text-3xl font-bold text-white mb-2">ProxyIP 纯净度分析台</h1>
+          <p className="text-gray-400 max-w-2xl">
+            手动输入来自 proxyip.chatkg.qzz.io 或其他源的 IP，系统将自动进行 Geo-IP 定位、ISP 识别及纯净度打分。
+          </p>
+        </div>
+
+        {/* Input Area */}
+        <div className="bg-gray-800/50 border border-gray-700/50 rounded-xl p-5 mb-8 shadow-lg">
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-semibold text-gray-300 flex items-center gap-2">
+                <Clipboard size={16} className="text-emerald-400" />
+                粘贴 IP 列表 (支持 IP:Port 格式, 每行一个)
+              </label>
+              <span className="text-xs text-gray-500">建议单次不超过 50 个</span>
             </div>
-            <div className="flex items-center gap-3 text-sm text-gray-500 font-mono">
-              <span className="flex items-center gap-1.5">
-                <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
-                数据库在线
-              </span>
-              <span>•</span>
-              <span>{proxies.length} IPs 已索引</span>
-            </div>
-          </div>
-
-          {/* Controls */}
-          <div className="bg-gray-800/50 border border-gray-700/50 rounded-xl p-4 flex flex-col xl:flex-row gap-4">
-            {/* Search Input */}
-            <div className="relative flex-1 w-full min-w-[200px]">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 w-5 h-5" />
-              <input 
-                type="text" 
-                placeholder="搜索 IP, ISP, 或国家/地区..." 
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full bg-gray-900 border border-gray-700 text-gray-200 text-sm rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-transparent block pl-10 p-2.5 transition-all"
-              />
-            </div>
-            
-            <div className="flex flex-wrap items-center gap-2 w-full xl:w-auto">
-              
-              {/* Country Dropdown */}
-              <div className="relative w-full sm:w-auto">
-                <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 w-4 h-4" />
-                <select 
-                  className="w-full sm:w-40 bg-gray-900 border border-gray-700 text-gray-300 text-sm rounded-lg focus:ring-emerald-500 focus:border-emerald-500 block pl-9 p-2.5 appearance-none"
-                  value={filters.country || ''}
-                  onChange={(e) => setFilters(prev => ({ ...prev, country: e.target.value || undefined }))}
-                >
-                  <option value="">所有地区</option>
-                  {uniqueCountries.map(([code, name]) => (
-                    <option key={code} value={code}>{name}</option>
-                  ))}
-                </select>
-              </div>
-
-              {/* ISP Type Dropdown */}
-              <div className="relative w-full sm:w-auto">
-                <Network className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 w-4 h-4" />
-                <select 
-                  className="w-full sm:w-48 bg-gray-900 border border-gray-700 text-gray-300 text-sm rounded-lg focus:ring-emerald-500 focus:border-emerald-500 block pl-9 p-2.5 appearance-none"
-                  value={filters.isResidential === undefined ? 'all' : String(filters.isResidential)}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    let isRes: boolean | undefined = undefined;
-                    if (val === 'true') isRes = true;
-                    if (val === 'false') isRes = false;
-                    setFilters(prev => ({ ...prev, isResidential: isRes }));
-                  }}
-                >
-                  <option value="all">所有网络类型</option>
-                  <option value="true">🏡 家庭宽带 (Residential)</option>
-                  <option value="false">🏢 数据中心/企业 (DC)</option>
-                </select>
-              </div>
-
-              {/* Purity Score Dropdown */}
-              <div className="relative w-full sm:w-auto">
-                <Filter className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 w-4 h-4" />
-                <select 
-                  className="w-full sm:w-40 bg-gray-900 border border-gray-700 text-gray-300 text-sm rounded-lg focus:ring-emerald-500 focus:border-emerald-500 block pl-9 p-2.5 appearance-none"
-                  onChange={(e) => setFilters(prev => ({ ...prev, minPurity: Number(e.target.value) }))}
-                >
-                  <option value="0">不限分数</option>
-                  <option value="50">50+ 良好</option>
-                  <option value="80">80+ 纯净</option>
-                </select>
-              </div>
-
-              {/* Refresh Button */}
+            <textarea
+              className="w-full h-32 bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm font-mono text-gray-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all resize-y"
+              placeholder={`1.2.3.4:443\n5.6.7.8:80\n...`}
+              value={manualInput}
+              onChange={(e) => setManualInput(e.target.value)}
+            />
+            <div className="flex justify-end">
               <button 
-                onClick={loadData}
-                disabled={loading}
-                className="w-full sm:w-auto p-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors disabled:opacity-50 flex items-center justify-center"
+                onClick={handleManualAnalyze}
+                disabled={analyzing || !manualInput.trim()}
+                className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-2 rounded-lg font-medium shadow-lg shadow-emerald-900/30 flex items-center gap-2 transition-all transform active:scale-95"
               >
-                <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
+                {analyzing ? (
+                  <>
+                    <RefreshCw className="animate-spin" size={18} /> 正在分析...
+                  </>
+                ) : (
+                  <>
+                    <Play size={18} fill="currentColor" /> 开始分析纯净度
+                  </>
+                )}
               </button>
             </div>
+          </div>
+        </div>
+
+        {/* Filters & Controls */}
+        <div className="bg-gray-800/30 border border-gray-700/30 rounded-xl p-4 flex flex-col xl:flex-row gap-4 mb-6">
+          {/* Search Input */}
+          <div className="relative flex-1 w-full min-w-[200px]">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 w-5 h-5" />
+            <input 
+              type="text" 
+              placeholder="在结果中搜索..." 
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full bg-gray-900 border border-gray-700 text-gray-200 text-sm rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-transparent block pl-10 p-2.5 transition-all"
+            />
+          </div>
+          
+          <div className="flex flex-wrap items-center gap-2 w-full xl:w-auto">
+            {/* Country Dropdown */}
+            <div className="relative w-full sm:w-auto">
+              <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 w-4 h-4" />
+              <select 
+                className="w-full sm:w-40 bg-gray-900 border border-gray-700 text-gray-300 text-sm rounded-lg focus:ring-emerald-500 focus:border-emerald-500 block pl-9 p-2.5 appearance-none"
+                value={filters.country || ''}
+                onChange={(e) => setFilters(prev => ({ ...prev, country: e.target.value || undefined }))}
+              >
+                <option value="">所有地区</option>
+                {uniqueCountries.map(([code, name]) => (
+                  <option key={code} value={code}>{name}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* ISP Type Dropdown */}
+            <div className="relative w-full sm:w-auto">
+              <Network className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 w-4 h-4" />
+              <select 
+                className="w-full sm:w-48 bg-gray-900 border border-gray-700 text-gray-300 text-sm rounded-lg focus:ring-emerald-500 focus:border-emerald-500 block pl-9 p-2.5 appearance-none"
+                value={filters.isResidential === undefined ? 'all' : String(filters.isResidential)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  let isRes: boolean | undefined = undefined;
+                  if (val === 'true') isRes = true;
+                  if (val === 'false') isRes = false;
+                  setFilters(prev => ({ ...prev, isResidential: isRes }));
+                }}
+              >
+                <option value="all">所有网络类型</option>
+                <option value="true">🏡 家庭宽带 (Residential)</option>
+                <option value="false">🏢 数据中心/企业 (DC)</option>
+              </select>
+            </div>
+
+            {/* Refresh (Reload DB) */}
+            <button 
+              onClick={loadData}
+              title="重新加载数据库历史记录"
+              className="w-full sm:w-auto p-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors flex items-center justify-center"
+            >
+              <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
+            </button>
           </div>
         </div>
 
@@ -279,7 +311,7 @@ function App() {
                     onClick={() => requestSort('latency')}
                   >
                     <div className="flex items-center justify-end">
-                      延迟 {getSortIcon('latency')}
+                      模拟延迟 {getSortIcon('latency')}
                     </div>
                   </th>
                   <th 
@@ -295,23 +327,11 @@ function App() {
                 </tr>
               </thead>
               <tbody>
-                {loading ? (
-                  // Skeleton Loading
-                  [...Array(5)].map((_, i) => (
-                    <tr key={i} className="border-b border-gray-700/50 animate-pulse">
-                      <td className="px-6 py-4"><div className="h-4 bg-gray-700 rounded w-32"></div></td>
-                      <td className="px-6 py-4"><div className="h-4 bg-gray-700 rounded w-24"></div></td>
-                      <td className="px-6 py-4"><div className="h-4 bg-gray-700 rounded w-16"></div></td>
-                      <td className="px-6 py-4"><div className="h-4 bg-gray-700 rounded w-12 ml-auto"></div></td>
-                      <td className="px-6 py-4"><div className="h-6 bg-gray-700 rounded w-16 mx-auto"></div></td>
-                      <td className="px-6 py-4"><div className="h-8 bg-gray-700 rounded w-8 mx-auto"></div></td>
-                    </tr>
-                  ))
-                ) : filteredAndSortedProxies.length === 0 ? (
+                {filteredAndSortedProxies.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="px-6 py-12 text-center text-gray-500">
                       <Filter className="w-12 h-12 mx-auto mb-3 opacity-20" />
-                      未找到符合条件的 ProxyIP。请等待 Worker 后台任务运行。
+                      {loading ? '正在加载数据...' : '暂无数据，请在上方粘贴 IP 并点击开始分析'}
                     </td>
                   </tr>
                 ) : (
@@ -327,7 +347,7 @@ function App() {
                           <span className="text-gray-500 ml-1">:{proxy.port}</span>
                         </div>
                         <div className="text-xs text-gray-500 mt-1 flex items-center gap-1">
-                           {proxy.isp || 'Unknown ISP'}
+                           {proxy.isp || '正在识别...'}
                         </div>
                       </td>
                       <td className="px-6 py-4">
@@ -352,7 +372,6 @@ function App() {
                               <Building2 size={10} /> 数据中心
                             </span>
                           )}
-                          <span className="text-[10px] text-gray-500 font-mono">HTTPS 反代</span>
                         </div>
                       </td>
                       <td className="px-6 py-4 text-right font-mono text-gray-300">
@@ -376,13 +395,13 @@ function App() {
             </table>
           </div>
           
-          {/* Footer of table */}
+          {/* Footer */}
           <div className="bg-gray-900/50 px-6 py-3 border-t border-gray-700 flex justify-between items-center">
             <span className="text-xs text-gray-500">
               显示 {filteredAndSortedProxies.length} 个结果
             </span>
             <div className="text-xs text-gray-600 font-mono">
-              数据源: 391040525/ProxyIP
+              纯净度分析台模式
             </div>
           </div>
         </div>

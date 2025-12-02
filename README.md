@@ -1,41 +1,25 @@
 
-# PureProxy 纯净度扫描 (Cloudflare ProxyIP 版)
+# PureProxy 纯净度分析台 (Manual Analysis Mode)
 
-这是一个基于 **Cloudflare 生态系统** 构建的 **ProxyIP** 专用搜索引擎。
-它可以自动扫描、验证并分类那些能够反向代理 Cloudflare 服务的优质 IP（优选反代 IP）。
+这是一个基于 Cloudflare 全栈架构 (React + Workers + D1) 的 ProxyIP 纯净度分析工具。
+由于全自动抓取 IP 在 Cloudflare 环境下存在诸多网络限制，本项目已转型为 **“辅助分析工具”**。
 
----
-
-## 📖 什么是 ProxyIP？
-
-在 Cloudflare Workers 环境中，**ProxyIP** 特指那些能够成功代理连接到 Cloudflare 服务的第三方 IP 地址。
-
-### 🔧 技术原理
-Cloudflare Workers 存在限制，无法直接连接到 Cloudflare 自有的 IP 段（回环限制）。为了绕过此限制，我们需要寻找第三方服务器作为“跳板”：
-
-`Cloudflare Workers` (发起请求) -> **`ProxyIP 服务器`** (第三方代理) -> `Cloudflare 服务` (目标)
-
-✅ **有效 ProxyIP 特征**：
-1.  **非 Cloudflare IP**: IP 本身不能属于 Cloudflare CDN 范围（如 104.16.x.x），否则 Workers 无法连接。
-2.  **反向代理能力**: 当我们向其发送 `Host: speed.cloudflare.com` 请求时，它能正确转发并返回包含 `Server: cloudflare` 的响应头。
+用户可以手动粘贴来自其他来源（如 `proxyip.chatkg.qzz.io`）的 IP 列表，本工具将利用 Worker 后端进行：
+1.  **实时 Geo-IP 查询**: 获取国家、城市、ISP 等信息。
+2.  **纯净度打分**: 识别是否为家庭宽带、是否为优质云厂商 (Oracle/Aliyun)。
+3.  **风险评估**: 结合 Gemini AI 对 IP 进行深度风控分析。
 
 ---
 
-## 🚀 核心策略 (V12 - 导入模式)
+## 🚀 核心功能
 
-为了彻底解决 Cloudflare Workers 发起出站 TCP 连接不稳定的问题，本项目切换为 **Importer Mode (导入模式)**：
-
-1.  **信任精华源**:
-    *   直接接入 `ymyuuu/IPDB` 和 `391040525` 的精选列表 (`bestproxy.txt` / `active.txt`)。
-    *   这些列表由上游维护者通过高性能 VPS 扫描生成，**100% 可用**。
-2.  **Geo-IP 增强**: 
-    *   Worker 不再浪费资源去测试连接，而是专注于调用 Geo API。
-    *   为每个 IP 补充真实的 **国家、省份、城市、ISP** 信息。
-3.  **智能流控**:
-    *   单次 Cron 任务限制处理 **35 个 IP**，以严格遵守免费 Geo API 的速率限制。
-    *   通过高频 Cron (每 2-3 分钟)，一小时可稳定入库 **800+** 个高质量 IP。
-4.  **D1 批量写入**:
-    *   使用 `env.DB.batch()` 批量入库，降低数据库 IO 压力。
+1.  **手动导入**: 支持粘贴 `IP:Port` 列表，后端并发分析。
+2.  **ISP 识别**: 自动标记 **家宽 (Residential)** 和 **数据中心 (Datacenter)**。
+3.  **评分系统**:
+    *   家宽 +30分
+    *   热门地区 (US/SG/JP) +10分
+    *   Cloudflare 官方 IP -10分 (因无法反代 CF 自身)
+4.  **数据持久化**: 分析过的 IP 会自动存入 Cloudflare D1 数据库，形成个人的优选库。
 
 ---
 
@@ -68,34 +52,29 @@ Cloudflare Workers 存在限制，无法直接连接到 Cloudflare 自有的 IP 
       created_at INTEGER,
       UNIQUE(ip, port)
     );
-    CREATE INDEX idx_proxies_purity ON proxies(purity_score DESC);
-    CREATE INDEX idx_proxies_country ON proxies(country_code);
-    CREATE INDEX idx_proxies_residential ON proxies(is_residential);
     ```
 
 ### 第二步：部署后端 Worker (图形化)
 
 1.  **Edit code**: 将 `worker/index.ts` 的代码复制粘贴到 Cloudflare 编辑器。
-2.  **Bindings**: Settings -> Bindings -> Add -> D1 Database -> 绑定 `DB` 到 `pureproxy-db`。
-3.  **Triggers**: Settings -> Triggers -> Add Cron Trigger -> `*/3 * * * *` (每 3 分钟运行一次)。
-4.  **Deploy**: 点击部署。
+2.  **Bindings**: Settings -> Bindings -> Add -> D1 Database -> 绑定变量名 `DB` 到 `pureproxy-db`。
+3.  **Deploy**: 点击部署。
+4.  **获取 URL**: 复制部署后的 Worker URL (如 `https://pureproxy-backend.xxx.workers.dev`)。
 
 ### 第三步：部署前端 Pages
 
 1.  将代码推送到 GitHub。
 2.  在 Cloudflare 创建 Pages 项目，连接 GitHub。
 3.  **Build Settings**: Framework preset 选 **Vite**，Output directory 填 **dist**。
-4.  **Environment variables**: 添加 `REACT_APP_API_URL`，值为你的 Worker URL。
+4.  **Environment variables**: 
+    *   `REACT_APP_API_URL`: 填入你的 Worker URL。
+    *   `API_KEY` (可选): 填入 Gemini API Key 用于 AI 分析。
 
 ---
 
-## ❓ 常见问题排查
+## ❓ 使用方法
 
-### 1. 为什么日志显示 "处理完成"?
-在导入模式下，只要能从 GitHub 下载列表并获取到 Geo 信息，就算成功。
-
-### 2. 为什么每次只增加 30 多个？
-这是为了保护免费的 Geo API 不被封禁。Worker 会持续运行，积少成多，一小时就能积累大量数据。
-
-### 3. 如何验证？
-在 Worker Logs 中看到 `✅ 入库: x.x.x.x` 和 `数据库写入成功!` 即为正常。
+1.  打开部署好的前端网页。
+2.  在文本框中粘贴 IP 列表（每行一个 `IP:端口`）。
+3.  点击 **“开始分析纯净度”**。
+4.  等待几秒，列表将自动刷新，显示详细的 ISP、位置和评分信息。
