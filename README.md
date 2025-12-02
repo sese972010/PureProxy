@@ -21,23 +21,21 @@ Cloudflare Workers 存在限制，无法直接连接到 Cloudflare 自有的 IP 
 
 ---
 
-## 🚀 核心策略 (v9.0 - 增强并发版)
+## 🚀 核心策略 (V12 - 导入模式)
 
-本项目采用 **"并发验证 + 批量写入"** 的高性能架构，极大提升了免费版 Worker 的利用率：
+为了彻底解决 Cloudflare Workers 发起出站 TCP 连接不稳定的问题，本项目切换为 **Importer Mode (导入模式)**：
 
-1.  **多源海量采集**:
-    *   接入 `vfarid`, `Monosans`, `391040525`, `sunny9577`, `roosterkid`, `prxchk` 等 6 个高质量数据源。
-    *   每次任务自动解析数万候选 IP。
-2.  **并发批处理 (Concurrent Batching)**: 
-    *   **并行验证**: 每次同时验证 20 个 IP。
-    *   **高吞吐**: 单次 Cron 任务上限提升至 **300 个 IP**。
-    *   **快速筛选**: 连接超时缩短至 1s，快速淘汰劣质 IP。
-3.  **D1 批量写入 (Batch Insert)**:
-    *   使用 `env.DB.batch()` 技术，一次性将几十条有效数据写入数据库。
-    *   避免了"查一个写一个"的高频 IO，保护数据库配额。
-4.  **智能流控 & 防御**:
-    *   内置 Geo-IP API 速率限制保护，防止并发过高导致 IP 被封。
-    *   自动剔除 Cloudflare 官方 IP 段，防止 Worker 死锁。
+1.  **信任精华源**:
+    *   直接接入 `ymyuuu/IPDB` 和 `391040525` 的精选列表 (`bestproxy.txt` / `active.txt`)。
+    *   这些列表由上游维护者通过高性能 VPS 扫描生成，**100% 可用**。
+2.  **Geo-IP 增强**: 
+    *   Worker 不再浪费资源去测试连接，而是专注于调用 Geo API。
+    *   为每个 IP 补充真实的 **国家、省份、城市、ISP** 信息。
+3.  **智能流控**:
+    *   单次 Cron 任务限制处理 **35 个 IP**，以严格遵守免费 Geo API 的速率限制。
+    *   通过高频 Cron (每 2-3 分钟)，一小时可稳定入库 **800+** 个高质量 IP。
+4.  **D1 批量写入**:
+    *   使用 `env.DB.batch()` 批量入库，降低数据库 IO 压力。
 
 ---
 
@@ -75,18 +73,12 @@ Cloudflare Workers 存在限制，无法直接连接到 Cloudflare 自有的 IP 
     CREATE INDEX idx_proxies_residential ON proxies(is_residential);
     ```
 
-### 第二步：部署后端 Worker
+### 第二步：部署后端 Worker (图形化)
 
-1.  创建名为 `pureproxy-backend` 的 Worker。
-2.  点击 **Edit code**，将 `worker/index.ts` 的内容复制粘贴进去。
-3.  **配置 D1 绑定**: 
-    *   Settings -> Bindings -> Add -> D1 Database
-    *   Variable name: `DB`
-    *   Database: `pureproxy-db`
-4.  **配置定时任务**:
-    *   Settings -> Triggers -> Cron Triggers -> Add Cron Trigger
-    *   Cron expression: `*/2 * * * *` (建议每 2 分钟运行一次，快速填充数据库)
-5.  点击 **Deploy**。
+1.  **Edit code**: 将 `worker/index.ts` 的代码复制粘贴到 Cloudflare 编辑器。
+2.  **Bindings**: Settings -> Bindings -> Add -> D1 Database -> 绑定 `DB` 到 `pureproxy-db`。
+3.  **Triggers**: Settings -> Triggers -> Add Cron Trigger -> `*/3 * * * *` (每 3 分钟运行一次)。
+4.  **Deploy**: 点击部署。
 
 ### 第三步：部署前端 Pages
 
@@ -99,11 +91,11 @@ Cloudflare Workers 存在限制，无法直接连接到 Cloudflare 自有的 IP 
 
 ## ❓ 常见问题排查
 
-### 1. 为什么日志显示 "发现 0 个有效"?
-这是正常的。ProxyIP 的存活率通常只有 1%-5%。我们通过提高扫描量（300个/次）和频率（2分钟/次）来弥补命中率。只要日志中出现过 "发现 X 个有效" 即为成功。
+### 1. 为什么日志显示 "处理完成"?
+在导入模式下，只要能从 GitHub 下载列表并获取到 Geo 信息，就算成功。
 
-### 2. 数据库什么时候有数据？
-第一次运行 Cron 可能需要几分钟。由于使用了批量写入，有效 IP 会在每次批处理结束时统一入库。
+### 2. 为什么每次只增加 30 多个？
+这是为了保护免费的 Geo API 不被封禁。Worker 会持续运行，积少成多，一小时就能积累大量数据。
 
 ### 3. 如何验证？
-在 Worker 的 Logs 中，如果您看到 `数据库写入成功！` 字样，说明流程完全通畅。
+在 Worker Logs 中看到 `✅ 入库: x.x.x.x` 和 `数据库写入成功!` 即为正常。
