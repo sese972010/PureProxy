@@ -1,3 +1,4 @@
+
 import { Type } from '@google/genai';
 
 export enum ProxyProtocol {
@@ -5,6 +6,11 @@ export enum ProxyProtocol {
   HTTPS = 'HTTPS',
   SOCKS4 = 'SOCKS4',
   SOCKS5 = 'SOCKS5',
+}
+
+export enum ProxyType {
+  PROXY = 'proxy', // 第三方反代 (ProxyIP)
+  BEST = 'best',   // Cloudflare 优选 (BestIP)
 }
 
 export enum AnonymityLevel {
@@ -24,19 +30,20 @@ export interface ProxyIP {
   ip: string;
   port: number;
   protocol: ProxyProtocol;
+  type: ProxyType; // New: Distinguish between ProxyIP and BestIP
   country: string;
-  countryCode: string; // ISO 3166-1 alpha-2
-  region?: string; // New: State/Province
-  city?: string;   // New: City
+  countryCode: string; 
+  region?: string; 
+  city?: string;   
   anonymity: AnonymityLevel;
-  latency: number; // in ms
-  uptime?: number; // percentage (optional now)
-  purityScore: number; // 0-100
-  cloudflarePassProbability: number; // 0-100
+  latency: number; 
+  speedInfo?: string; // New: Speed test info (e.g., "CMCC")
+  purityScore: number; 
+  cloudflarePassProbability: number; 
   riskLevel: RiskLevel;
   isp: string;
-  isResidential?: boolean; // New: Is Residential ISP
-  lastChecked: number | Date; // Allow number (timestamp from DB) or Date object
+  isResidential?: boolean; 
+  lastChecked: number | Date;
 }
 
 export interface FilterState {
@@ -46,7 +53,7 @@ export interface FilterState {
   maxLatency?: number;
   minPurity?: number;
   cfCompatible?: boolean;
-  isResidential?: boolean; // New: Filter for Residential vs Datacenter
+  isResidential?: boolean;
 }
 
 export interface AIAnalysisResult {
@@ -63,7 +70,6 @@ export interface AIModelConfig {
   provider: AIProvider;
 }
 
-// Gemini Schema for structured output
 export const AnalysisSchema = {
   type: Type.OBJECT,
   properties: {

@@ -15,11 +15,11 @@ import {
   Building2,
   MapPin,
   Network,
-  Clipboard,
-  Play
+  Zap,
+  Server
 } from 'lucide-react';
-import { fetchProxies, analyzeCustomIPs } from './services/proxyService';
-import { ProxyIP, FilterState, ProxyProtocol, AnonymityLevel } from './types';
+import { fetchProxies } from './services/proxyService';
+import { ProxyIP, FilterState, ProxyProtocol, AnonymityLevel, ProxyType } from './types';
 import PurityBadge from './components/PurityBadge';
 import DetailModal from './components/DetailModal';
 
@@ -31,11 +31,10 @@ interface SortConfig {
 }
 
 function App() {
+  const [activeTab, setActiveTab] = useState<ProxyType>(ProxyType.PROXY);
   const [proxies, setProxies] = useState<ProxyIP[]>([]);
   const [loading, setLoading] = useState(false);
-  const [analyzing, setAnalyzing] = useState(false);
   const [selectedProxy, setSelectedProxy] = useState<ProxyIP | null>(null);
-  const [manualInput, setManualInput] = useState('');
   
   // Sorting State
   const [sortConfig, setSortConfig] = useState<SortConfig>({ key: 'purityScore', direction: 'desc' });
@@ -43,17 +42,15 @@ function App() {
   // Filters
   const [searchTerm, setSearchTerm] = useState('');
   const [filters, setFilters] = useState<FilterState>({
-    protocol: undefined,
     country: undefined,
-    minPurity: 0,
-    isResidential: undefined // undefined = all, true = residential, false = datacenter
   });
 
   const loadData = async () => {
     setLoading(true);
     try {
-      const data = await fetchProxies();
-      if (data.length > 0) {
+      // Load data based on active tab
+      const data = await fetchProxies(activeTab);
+      if (data) {
         setProxies(data);
       }
     } catch (error) {
@@ -65,38 +62,7 @@ function App() {
 
   useEffect(() => {
     loadData();
-  }, []);
-
-  const handleManualAnalyze = async () => {
-    if (!manualInput.trim()) return;
-    setAnalyzing(true);
-    
-    // Split by newlines or commas
-    const lines = manualInput
-      .split(/[\n,]/)
-      .map(s => s.trim())
-      .filter(s => s.length > 5); // Basic filter
-
-    if (lines.length === 0) {
-      setAnalyzing(false);
-      return;
-    }
-
-    try {
-      const results = await analyzeCustomIPs(lines);
-      // Merge results: 新的结果在最前，旧的结果保留但去重
-      setProxies(prev => {
-        const newIds = new Set(results.map(r => r.ip + r.port));
-        const keptPrev = prev.filter(p => !newIds.has(p.ip + p.port));
-        return [...results, ...keptPrev];
-      });
-      setManualInput(''); // Clear input on success
-    } catch (err) {
-      alert("分析失败，请检查 Worker 是否配置正确或 IP 格式是否正确");
-    } finally {
-      setAnalyzing(false);
-    }
-  };
+  }, [activeTab]); // Reload when tab changes
 
   // 动态提取现有数据中的所有国家列表
   const uniqueCountries = useMemo(() => {
@@ -134,16 +100,12 @@ function App() {
       const matchesSearch = 
         p.ip.includes(searchTerm) || 
         p.country.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        p.isp.toLowerCase().includes(searchTerm.toLowerCase());
+        p.isp.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (p.speedInfo && p.speedInfo.toLowerCase().includes(searchTerm.toLowerCase()));
       
-      const matchesProtocol = filters.protocol ? p.protocol === filters.protocol : true;
-      const matchesPurity = filters.minPurity ? p.purityScore >= filters.minPurity : true;
       const matchesCountry = filters.country ? p.countryCode === filters.country : true;
-      const matchesType = filters.isResidential !== undefined 
-        ? p.isResidential === filters.isResidential 
-        : true;
       
-      return matchesSearch && matchesProtocol && matchesPurity && matchesCountry && matchesType;
+      return matchesSearch && matchesCountry;
     });
 
     // 2. Sort
@@ -172,10 +134,29 @@ function App() {
             </div>
             <span className="font-bold text-xl tracking-tight text-white">PureProxy<span className="text-emerald-500">.scan</span></span>
           </div>
-          <div className="flex items-center gap-4">
-             <a href="https://github.com/sese972010/PureProxy" target="_blank" rel="noreferrer" className="text-gray-400 hover:text-white transition-colors text-sm font-medium">
-                GitHub
-             </a>
+          
+          {/* Tabs */}
+          <div className="flex bg-gray-900 p-1 rounded-lg border border-gray-700">
+             <button
+                onClick={() => setActiveTab(ProxyType.PROXY)}
+                className={`px-4 py-1.5 text-sm font-medium rounded-md transition-all ${
+                  activeTab === ProxyType.PROXY 
+                    ? 'bg-emerald-600 text-white shadow-lg' 
+                    : 'text-gray-400 hover:text-white'
+                }`}
+             >
+                ProxyIP (反代)
+             </button>
+             <button
+                onClick={() => setActiveTab(ProxyType.BEST)}
+                className={`px-4 py-1.5 text-sm font-medium rounded-md transition-all ${
+                  activeTab === ProxyType.BEST 
+                    ? 'bg-blue-600 text-white shadow-lg' 
+                    : 'text-gray-400 hover:text-white'
+                }`}
+             >
+                CF 优选 IP (加速)
+             </button>
           </div>
         </div>
       </nav>
@@ -183,48 +164,20 @@ function App() {
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         
-        {/* Header */}
+        {/* Header Description */}
         <div className="mb-6">
-          <h1 className="text-3xl font-bold text-white mb-2">ProxyIP 纯净度分析台</h1>
-          <p className="text-gray-400 max-w-2xl">
-            手动输入来自 proxyip.chatkg.qzz.io 或其他源的 IP，系统将自动进行 Geo-IP 定位、ISP 识别及纯净度打分。
+          <h1 className="text-2xl font-bold text-white mb-2 flex items-center gap-2">
+            {activeTab === ProxyType.PROXY ? (
+              <><Globe className="text-emerald-400" /> 全球 ProxyIP 纯净度分析</>
+            ) : (
+              <><Zap className="text-blue-400" /> Cloudflare 优选节点 (CDN 加速)</>
+            )}
+          </h1>
+          <p className="text-gray-400 max-w-2xl text-sm">
+            {activeTab === ProxyType.PROXY 
+              ? "自动过滤 Cloudflare 官方 IP，筛选出 Oracle, Aliyun 等优质第三方反代节点，适合 Workers 回源使用。" 
+              : "收录 Cloudflare 官方优质边缘节点，已针对中国大陆三网（移动、联通、电信）进行线路优化，适合自建 CDN 加速。"}
           </p>
-        </div>
-
-        {/* Input Area */}
-        <div className="bg-gray-800/50 border border-gray-700/50 rounded-xl p-5 mb-8 shadow-lg">
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center justify-between">
-              <label className="text-sm font-semibold text-gray-300 flex items-center gap-2">
-                <Clipboard size={16} className="text-emerald-400" />
-                粘贴 IP 列表 (支持 IP:Port 格式, 每行一个)
-              </label>
-              <span className="text-xs text-gray-500">建议单次不超过 50 个</span>
-            </div>
-            <textarea
-              className="w-full h-32 bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm font-mono text-gray-200 focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all resize-y"
-              placeholder={`1.2.3.4:443\n5.6.7.8:80\n...`}
-              value={manualInput}
-              onChange={(e) => setManualInput(e.target.value)}
-            />
-            <div className="flex justify-end">
-              <button 
-                onClick={handleManualAnalyze}
-                disabled={analyzing || !manualInput.trim()}
-                className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-2 rounded-lg font-medium shadow-lg shadow-emerald-900/30 flex items-center gap-2 transition-all transform active:scale-95"
-              >
-                {analyzing ? (
-                  <>
-                    <RefreshCw className="animate-spin" size={18} /> 正在分析...
-                  </>
-                ) : (
-                  <>
-                    <Play size={18} fill="currentColor" /> 开始分析纯净度
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
         </div>
 
         {/* Filters & Controls */}
@@ -234,7 +187,7 @@ function App() {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 w-5 h-5" />
             <input 
               type="text" 
-              placeholder="在结果中搜索..." 
+              placeholder={activeTab === ProxyType.PROXY ? "搜索 ISP / 国家..." : "搜索 移动 / 联通 / 电信..."}
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full bg-gray-900 border border-gray-700 text-gray-200 text-sm rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-transparent block pl-10 p-2.5 transition-all"
@@ -257,26 +210,6 @@ function App() {
               </select>
             </div>
 
-            {/* ISP Type Dropdown */}
-            <div className="relative w-full sm:w-auto">
-              <Network className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 w-4 h-4" />
-              <select 
-                className="w-full sm:w-48 bg-gray-900 border border-gray-700 text-gray-300 text-sm rounded-lg focus:ring-emerald-500 focus:border-emerald-500 block pl-9 p-2.5 appearance-none"
-                value={filters.isResidential === undefined ? 'all' : String(filters.isResidential)}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  let isRes: boolean | undefined = undefined;
-                  if (val === 'true') isRes = true;
-                  if (val === 'false') isRes = false;
-                  setFilters(prev => ({ ...prev, isResidential: isRes }));
-                }}
-              >
-                <option value="all">所有网络类型</option>
-                <option value="true">🏡 家庭宽带 (Residential)</option>
-                <option value="false">🏢 数据中心/企业 (DC)</option>
-              </select>
-            </div>
-
             {/* Refresh (Reload DB) */}
             <button 
               onClick={loadData}
@@ -294,7 +227,7 @@ function App() {
             <table className="w-full text-sm text-left text-gray-400">
               <thead className="text-xs text-gray-500 uppercase bg-gray-900/50 border-b border-gray-700">
                 <tr>
-                  <th scope="col" className="px-6 py-4 font-medium">IP 地址 / ISP</th>
+                  <th scope="col" className="px-6 py-4 font-medium">IP 地址</th>
                   <th 
                     scope="col" 
                     className="px-6 py-4 font-medium cursor-pointer hover:text-white hover:bg-gray-800 transition-colors"
@@ -304,14 +237,16 @@ function App() {
                       地理位置 {getSortIcon('country')}
                     </div>
                   </th>
-                  <th scope="col" className="px-6 py-4 font-medium">类型</th>
+                  <th scope="col" className="px-6 py-4 font-medium">
+                    {activeTab === ProxyType.PROXY ? "ISP / 运营商" : "优选线路备注"}
+                  </th>
                   <th 
                     scope="col" 
                     className="px-6 py-4 font-medium text-right cursor-pointer hover:text-white hover:bg-gray-800 transition-colors"
                     onClick={() => requestSort('latency')}
                   >
                     <div className="flex items-center justify-end">
-                      模拟延迟 {getSortIcon('latency')}
+                      延迟 {getSortIcon('latency')}
                     </div>
                   </th>
                   <th 
@@ -320,7 +255,7 @@ function App() {
                     onClick={() => requestSort('purityScore')}
                   >
                     <div className="flex items-center justify-center">
-                      纯净度 {getSortIcon('purityScore')}
+                      {activeTab === ProxyType.PROXY ? "纯净度" : "推荐分"} {getSortIcon('purityScore')}
                     </div>
                   </th>
                   <th scope="col" className="px-6 py-4 font-medium text-center">操作</th>
@@ -331,7 +266,7 @@ function App() {
                   <tr>
                     <td colSpan={6} className="px-6 py-12 text-center text-gray-500">
                       <Filter className="w-12 h-12 mx-auto mb-3 opacity-20" />
-                      {loading ? '正在加载数据...' : '暂无数据，请在上方粘贴 IP 并点击开始分析'}
+                      {loading ? '正在从数据库加载...' : '数据库暂无数据，请等待后台 Cron 任务执行'}
                     </td>
                   </tr>
                 ) : (
@@ -347,7 +282,8 @@ function App() {
                           <span className="text-gray-500 ml-1">:{proxy.port}</span>
                         </div>
                         <div className="text-xs text-gray-500 mt-1 flex items-center gap-1">
-                           {proxy.isp || '正在识别...'}
+                           <span className={`w-2 h-2 rounded-full ${proxy.port === 443 ? 'bg-emerald-500' : 'bg-blue-500'}`}></span>
+                           {proxy.protocol}
                         </div>
                       </td>
                       <td className="px-6 py-4">
@@ -362,21 +298,29 @@ function App() {
                         </div>
                       </td>
                       <td className="px-6 py-4">
-                        <div className="flex flex-col gap-1 items-start">
-                          {proxy.isResidential ? (
-                            <span className="flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                              <Home size={10} /> 家宽
-                            </span>
-                          ) : (
-                             <span className="flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-gray-600/20 text-gray-400 border border-gray-600/30">
-                              <Building2 size={10} /> 数据中心
-                            </span>
-                          )}
-                        </div>
+                        {activeTab === ProxyType.PROXY ? (
+                            <div className="flex flex-col gap-1 items-start">
+                              <span className="text-gray-300 font-medium">{proxy.isp}</span>
+                              {['Oracle', 'Aliyun', 'Tencent'].some(k => proxy.isp.includes(k)) && (
+                                <span className="text-xs text-indigo-400 flex items-center gap-1">
+                                  <Server size={10} /> 优质云
+                                </span>
+                              )}
+                            </div>
+                        ) : (
+                            <div className="flex flex-col gap-1 items-start">
+                               {proxy.speedInfo ? (
+                                  <span className="px-2 py-0.5 rounded bg-blue-500/10 text-blue-300 border border-blue-500/20 text-xs">
+                                     {proxy.speedInfo}
+                                  </span>
+                               ) : <span className="text-gray-500">-</span>}
+                               <span className="text-xs text-gray-500">{proxy.isp}</span>
+                            </div>
+                        )}
                       </td>
                       <td className="px-6 py-4 text-right font-mono text-gray-300">
                         <div className="flex items-center justify-end gap-2">
-                          <Wifi size={14} className={proxy.latency < 200 ? 'text-emerald-500' : 'text-amber-500'} />
+                          <Wifi size={14} className={proxy.latency < 100 ? 'text-emerald-500' : 'text-amber-500'} />
                           {proxy.latency}ms
                         </div>
                       </td>
@@ -398,10 +342,10 @@ function App() {
           {/* Footer */}
           <div className="bg-gray-900/50 px-6 py-3 border-t border-gray-700 flex justify-between items-center">
             <span className="text-xs text-gray-500">
-              显示 {filteredAndSortedProxies.length} 个结果
+              显示前 {filteredAndSortedProxies.length} 个结果 (优化性能)
             </span>
             <div className="text-xs text-gray-600 font-mono">
-              纯净度分析台模式
+              V22 双模旗舰版
             </div>
           </div>
         </div>

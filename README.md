@@ -1,80 +1,70 @@
 
-# PureProxy 纯净度分析台 (Manual Analysis Mode)
+# PureProxy V22 (Dual-Mode Flagship)
 
-这是一个基于 Cloudflare 全栈架构 (React + Workers + D1) 的 ProxyIP 纯净度分析工具。
-由于全自动抓取 IP 在 Cloudflare 环境下存在诸多网络限制，本项目已转型为 **“辅助分析工具”**。
-
-用户可以手动粘贴来自其他来源（如 `proxyip.chatkg.qzz.io`）的 IP 列表，本工具将利用 Worker 后端进行：
-1.  **实时 Geo-IP 查询**: 获取国家、城市、ISP 等信息。
-2.  **纯净度打分**: 识别是否为家庭宽带、是否为优质云厂商 (Oracle/Aliyun)。
-3.  **风险评估**: 结合 Gemini AI 对 IP 进行深度风控分析。
+兼容 Cloudflare 全栈架构 (React + Workers + D1) 的高级代理 IP 分析平台。
+本项目复刻了 `proxyip` 和 `bestcf` 两大类网站的核心功能，提供双模采集与展示。
 
 ---
 
-## 🚀 核心功能
+## 🚀 V22 核心特性 (双模引擎)
 
-1.  **手动导入**: 支持粘贴 `IP:Port` 列表，后端并发分析。
-2.  **ISP 识别**: 自动标记 **家宽 (Residential)** 和 **数据中心 (Datacenter)**。
-3.  **评分系统**:
-    *   家宽 +30分
-    *   热门地区 (US/SG/JP) +10分
-    *   Cloudflare 官方 IP -10分 (因无法反代 CF 自身)
-4.  **数据持久化**: 分析过的 IP 会自动存入 Cloudflare D1 数据库，形成个人的优选库。
+本项目在一个 Worker 中同时运行两套逻辑，数据分类存储：
 
----
+### 1. ProxyIP 模式 (反代)
+*   **目标**: 获取能反向代理 Cloudflare 的第三方 IP。
+*   **源头**: `ymyuuu/IPDB/bestproxy.txt`
+*   **逻辑**: **严格剔除 Cloudflare 官方 IP**。只保留 Oracle, Aliyun, DigitalOcean 等第三方 ISP。
+*   **用途**: 适合 Worker 回源、隐藏源站 IP。
 
-## 🛠️ 部署指南
-
-### 第一步：创建 D1 数据库
-
-1.  在 Cloudflare Dashboard 点击 **Workers & Pages** -> **D1 SQL Database** -> **Create**。
-2.  数据库名称填写: `pureproxy-db`。
-3.  创建后进入 **Console (控制台)** 标签页，**复制并执行以下 SQL 代码** (请先删除旧表)：
-
-    ```sql
-    DROP TABLE IF EXISTS proxies;
-    CREATE TABLE proxies (
-      id TEXT PRIMARY KEY,
-      ip TEXT NOT NULL,
-      port INTEGER NOT NULL,
-      protocol TEXT,
-      country TEXT,
-      country_code TEXT,
-      region TEXT,
-      city TEXT,
-      isp TEXT,
-      is_residential INTEGER DEFAULT 0,
-      anonymity TEXT,
-      latency INTEGER,
-      purity_score INTEGER,
-      cf_pass_prob INTEGER,
-      last_checked INTEGER,
-      created_at INTEGER,
-      UNIQUE(ip, port)
-    );
-    ```
-
-### 第二步：部署后端 Worker (图形化)
-
-1.  **Edit code**: 将 `worker/index.ts` 的代码复制粘贴到 Cloudflare 编辑器。
-2.  **Bindings**: Settings -> Bindings -> Add -> D1 Database -> 绑定变量名 `DB` 到 `pureproxy-db`。
-3.  **Deploy**: 点击部署。
-4.  **获取 URL**: 复制部署后的 Worker URL (如 `https://pureproxy-backend.xxx.workers.dev`)。
-
-### 第三步：部署前端 Pages
-
-1.  将代码推送到 GitHub。
-2.  在 Cloudflare 创建 Pages 项目，连接 GitHub。
-3.  **Build Settings**: Framework preset 选 **Vite**，Output directory 填 **dist**。
-4.  **Environment variables**: 
-    *   `REACT_APP_API_URL`: 填入你的 Worker URL。
-    *   `API_KEY` (可选): 填入 Gemini API Key 用于 AI 分析。
+### 2. BestIP 模式 (优选/加速)
+*   **目标**: 获取速度最快的 Cloudflare 边缘节点。
+*   **源头**: `ymyuuu/IPDB/bestcf.txt`
+*   **逻辑**: **保留 Cloudflare 官方 IP**。解析源文件中的线路备注（如“移动”、“电信”）。
+*   **用途**: 适合自建 CDN、科学上网加速、SaaS 接入。
 
 ---
 
-## ❓ 使用方法
+## 🛠️ 数据库升级 (必读)
 
-1.  打开部署好的前端网页。
-2.  在文本框中粘贴 IP 列表（每行一个 `IP:端口`）。
-3.  点击 **“开始分析纯净度”**。
-4.  等待几秒，列表将自动刷新，显示详细的 ISP、位置和评分信息。
+V22 引入了 `type` 字段来区分两种模式。请务必在 Cloudflare D1 Console 执行以下 SQL 进行更新（这会重置旧数据）：
+
+```sql
+DROP TABLE IF EXISTS proxies;
+CREATE TABLE proxies (
+  id TEXT PRIMARY KEY,
+  ip TEXT NOT NULL,
+  port INTEGER NOT NULL,
+  protocol TEXT,
+  type TEXT DEFAULT 'proxy', -- 新增: 'proxy' or 'best'
+  country TEXT,
+  country_code TEXT,
+  region TEXT,
+  city TEXT,
+  isp TEXT,
+  is_residential INTEGER DEFAULT 0,
+  anonymity TEXT,
+  latency INTEGER,
+  speed_info TEXT, -- 新增: 测速备注
+  purity_score INTEGER,
+  cf_pass_prob INTEGER,
+  last_checked INTEGER,
+  created_at INTEGER,
+  UNIQUE(ip, port)
+);
+CREATE INDEX IF NOT EXISTS idx_type_score ON proxies(type, purity_score DESC);
+```
+
+---
+
+## 📦 部署指南
+
+1.  **Worker**: 将 `worker/index.ts` 代码部署到 Cloudflare Worker。绑定 D1 数据库为 `DB`。
+2.  **Cron**: 保持 `*/3 * * * *` 的定时任务，Worker 会自动双线程采集。
+3.  **Pages**: 部署前端代码，设置环境变量 `REACT_APP_API_URL` 指向 Worker 地址。
+
+---
+
+## 📊 界面说明
+
+*   **ProxyIP 标签页**: 显示第三方反代 IP，关注 ISP 纯净度。
+*   **CF 优选 IP 标签页**: 显示官方加速节点，关注“优选线路备注” (如 CMCC/CT/CU)。
